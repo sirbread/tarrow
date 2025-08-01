@@ -13,6 +13,7 @@ import psutil
 import platform
 import time
 from datetime import datetime
+from functools import lru_cache
 
 class CatppuccinTheme:
     COLORS = {
@@ -45,6 +46,7 @@ class CatppuccinTheme:
     }
     
     @classmethod
+    @lru_cache(maxsize=32)  #opti :cache color lookups
     def get_color(cls, color_name):
         return cls.COLORS.get(color_name, '#ffffff')
 
@@ -63,6 +65,7 @@ class SystemStatsWorker(QThread):
         
         self.last_process_check = 0
         self.process_cache = []
+        self.process_check_interval = 5.0  #opti: check processes every 5 seconds you can change this too 
 
     def run(self):
         while self.running:
@@ -103,6 +106,19 @@ class SystemStatsWorker(QThread):
                 time.sleep(self.update_interval)
 
     def get_top_processes(self):
+        #optim: use cached process information if recent enough
+        current_time = time.time()
+        if current_time - self.last_process_check < self.process_check_interval and self.process_cache:
+            #return cached data if it recent enough
+            top_cpu = [p for p in self.process_cache if p['cpu_percent'] > 0.1]
+            top_cpu = sorted(top_cpu, key=lambda x: x['cpu_percent'], reverse=True)[:3]
+            
+            top_memory = [p for p in self.process_cache if p['memory_percent'] > 0.1]
+            top_memory = sorted(top_memory, key=lambda x: x['memory_percent'], reverse=True)[:3]
+            
+            return top_cpu, top_memory
+        
+        #if cache outdated, it fucking dies and gets replaced by new 
         top_cpu = []
         top_memory = []
         
@@ -126,6 +142,10 @@ class SystemStatsWorker(QThread):
                     
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                     continue
+            
+            #cache the processes themselves for future use
+            self.process_cache = processes
+            self.last_process_check = current_time
             
             cpu_processes = [p for p in processes if p['cpu_percent'] > 0.1]
             top_cpu = sorted(cpu_processes, key=lambda x: x['cpu_percent'], reverse=True)[:3]

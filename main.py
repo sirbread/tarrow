@@ -1067,7 +1067,7 @@ class OverlayEventFilter(QObject):
         
         return False
 
-class SystemMonitorApp(QObject):
+class tarrow(QObject):
     
     def __init__(self):
         super().__init__()
@@ -1183,7 +1183,7 @@ class SystemMonitorApp(QObject):
     def on_overlay_click(self):
         pass
     def load_settings(self):
-        settings_file = Path.home() / '.system_monitor_settings.json'
+        settings_file = Path.home() / '.tarrow.json'
         if settings_file.exists():
             try:
                 with open(settings_file, 'r') as f:
@@ -1228,7 +1228,7 @@ class SystemMonitorApp(QObject):
             'overlay_opacity': float(self.overlay.opacity if hasattr(self.overlay, "opacity") else 1.0)
         }
 
-        settings_file = Path.home() / '.system_monitor_settings.json'
+        settings_file = Path.home() / '.tarrow.json'
         try:
             with open(settings_file, 'w') as f:
                 json.dump(settings, f, indent=2)
@@ -1265,7 +1265,7 @@ class SystemMonitorApp(QObject):
             self.save_settings()
 
 if __name__ == "__main__":
-    app = SystemMonitorApp()
+    app = tarrow()
 
     def connect_settings_signals(overlay):
         if hasattr(overlay, 'settings_dialog') and overlay.settings_dialog:

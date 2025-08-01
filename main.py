@@ -300,6 +300,10 @@ class EdgeArrow(QWidget):
         self.animation_target_expanded = False
         self.mouse_inside = False
         
+        self.is_alert = False
+        self.alert_opacity = 0.0
+        self.alert_increasing = True
+        
         self.drag_preview = DragPreview()
         self.pin_indicator = PinIndicator()
         
@@ -312,10 +316,43 @@ class EdgeArrow(QWidget):
         self.expand_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         self.expand_animation.finished.connect(self.animation_finished)
         
+        self.breathing_timer = QTimer()
+        self.breathing_timer.timeout.connect(self.update_breathing)
+        
         self.screen = QApplication.primaryScreen()
         self.update_sizes_for_edge()
         self.position_on_edge()
         
+    def set_alert_state(self, is_alert):
+        """Set the alert state and start/stop breathing animation"""
+        if self.is_alert != is_alert:
+            self.is_alert = is_alert
+            if is_alert:
+                self.alert_opacity = 0.0
+                self.alert_increasing = True
+                self.breathing_timer.start(50)
+            else:
+                self.breathing_timer.stop()
+                self.alert_opacity = 0.0
+            self.update()
+    
+    def update_breathing(self):
+        """Update breathing animation state"""
+        step = 0.05
+        if self.alert_increasing:
+            self.alert_opacity += step
+            if self.alert_opacity >= 1.0:
+                self.alert_opacity = 1.0
+                self.alert_increasing = False
+        else:
+            self.alert_opacity -= step
+            if self.alert_opacity <= 0.2:
+                self.alert_opacity = 0.2
+                self.alert_increasing = True
+                
+        self.update()
+
+    
     def update_sizes_for_edge(self):
         if self.edge in ['top', 'bottom']:
             self.base_size = (60, 30)
@@ -462,7 +499,11 @@ class EdgeArrow(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
-        if self.is_expanded or self.mouse_inside:
+        if self.is_alert:
+            bg_color = QColor(CatppuccinTheme.get_color('surface1'))
+            accent_color = QColor(CatppuccinTheme.get_color('red'))
+            accent_color.setAlphaF(self.alert_opacity)
+        elif self.is_expanded or self.mouse_inside:
             bg_color = QColor(CatppuccinTheme.get_color('surface1'))
             accent_color = QColor(CatppuccinTheme.get_color('lavender'))
         else:
@@ -472,6 +513,12 @@ class EdgeArrow(QWidget):
         painter.setBrush(QBrush(bg_color))
         painter.setPen(QPen(accent_color, 2))
         painter.drawRoundedRect(self.rect(), 8, 8)
+        
+        if self.is_alert:
+            alert_fill = QColor(CatppuccinTheme.get_color('red'))
+            alert_fill.setAlphaF(self.alert_opacity * 0.3)
+            painter.setBrush(QBrush(alert_fill))
+            painter.drawRoundedRect(self.rect(), 8, 8)
         
         painter.setBrush(QBrush(accent_color))
         painter.setPen(QPen(accent_color, 2))
@@ -923,6 +970,8 @@ class StatsOverlay(QWidget):
             self.settings_dialog.opacity_changed.connect(self.change_opacity)
         self.settings_dialog.set_current_values(self.show_graphs, self.show_processes, self.parent_update_interval)
         self.settings_dialog.set_current_opacity(self.opacity)
+        if hasattr(self.parent(), "alert_threshold"):
+            self.settings_dialog.set_alert_threshold(self.parent().alert_threshold)
         self.settings_dialog.show()
         self.settings_dialog.raise_()
         self.settings_dialog.activateWindow()
@@ -961,16 +1010,18 @@ class SettingsDialog(QWidget):
     processes_changed = pyqtSignal(bool)
     interval_changed = pyqtSignal(float)
     opacity_changed = pyqtSignal(float)
+    alert_threshold_changed = pyqtSignal(float)
     
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("tarrow")
         self.setWindowFlags(Qt.WindowType.Dialog)
-        self.resize(400, 280)
+        self.resize(400, 300)
         self.current_show_graphs = parent.show_graphs if parent else True
         self.current_show_processes = parent.show_processes if parent else True
         self.current_interval = getattr(parent, "parent_update_interval", getattr(parent, "update_interval", 2.0))
         self.current_opacity = getattr(parent, "opacity", 1.0)
+        self.current_threshold = getattr(parent.parent(), "alert_threshold", 95.0) if parent and hasattr(parent, "parent") else 95.0
         self.setup_ui()
         
     def setup_ui(self):
@@ -1004,6 +1055,19 @@ class SettingsDialog(QWidget):
         interval_layout.addWidget(interval_label)
         interval_layout.addWidget(self.interval_spin)
         layout.addLayout(interval_layout)
+        
+        threshold_layout = QHBoxLayout()
+        threshold_label = QLabel("Alert Threshold (%):")
+        self.threshold_spin = QDoubleSpinBox()
+        self.threshold_spin.setRange(50.0, 100.0)
+        self.threshold_spin.setSingleStep(1.0)
+        self.threshold_spin.setDecimals(1)
+        self.threshold_spin.setValue(self.current_threshold)
+        
+        threshold_layout.addWidget(threshold_label)
+        threshold_layout.addWidget(self.threshold_spin)
+        layout.addLayout(threshold_layout)
+        
         opacity_layout = QHBoxLayout()
         opacity_label = QLabel("Overlay Opacity:")
         self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
@@ -1036,6 +1100,11 @@ class SettingsDialog(QWidget):
             self.opacity_slider.setValue(int(opacity * 100))
         if hasattr(self, "opacity_value_label"):
             self.opacity_value_label.setText(f"{opacity:.2f}")
+
+    def set_alert_threshold(self, threshold):
+        self.current_threshold = threshold
+        if hasattr(self, 'threshold_spin'):
+            self.threshold_spin.setValue(threshold)
     def on_graphs_changed_immediate(self, checked):
         self.graphs_changed.emit(checked)
         
@@ -1049,6 +1118,7 @@ class SettingsDialog(QWidget):
     def apply_settings(self):
         self.interval_changed.emit(self.interval_spin.value())
         self.opacity_changed.emit(self.current_opacity)
+        self.alert_threshold_changed.emit(self.threshold_spin.value())
         self.close()
 
 class OverlayEventFilter(QObject):
@@ -1078,6 +1148,9 @@ class tarrow(QObject):
         self.show_processes = True
         self.update_interval = 2.0
         self.overlay_opacity = 1.0
+        self.high_resource_usage = False
+        self.alert_threshold = 95.0
+        
         self.arrow = EdgeArrow()
         self.arrow.hover_show.connect(self.show_overlay_on_hover)
         self.arrow.click_toggle_pin.connect(self.toggle_pin_overlay)
@@ -1109,7 +1182,18 @@ class tarrow(QObject):
     def update_overlay_stats(self, stats):
         if self.overlay_visible:
             self.overlay.update_stats(stats)
+        
+        cpu_usage = stats.get('cpu', 0)
+        mem_stats = stats.get('memory', {})
+        mem_percent = mem_stats.get('percent', 0)
+        
+        is_high_usage = (cpu_usage >= self.alert_threshold or mem_percent >= self.alert_threshold)
+        
+        if is_high_usage != self.high_resource_usage:
+            self.high_resource_usage = is_high_usage
+            self.arrow.set_alert_state(is_high_usage)
     
+
     def check_hover_state(self):
         if not self.overlay_visible or self.overlay.is_pinned:
             return
@@ -1208,6 +1292,7 @@ class tarrow(QObject):
                 self.show_processes = settings.get('show_processes', True)
                 self.update_interval = float(settings.get('update_interval', 2.0))
                 self.overlay_opacity = float(settings.get('overlay_opacity', 1.0))
+                self.alert_threshold = float(settings.get('alert_threshold', 95.0))
                 self.overlay.show_graphs = self.show_graphs
                 self.overlay.show_processes = self.show_processes
                 self.stats_worker.set_update_interval(self.update_interval)
@@ -1225,7 +1310,8 @@ class tarrow(QObject):
             'show_graphs': self.show_graphs,
             'show_processes': self.show_processes,
             'update_interval': float(self.update_interval),
-            'overlay_opacity': float(self.overlay.opacity if hasattr(self.overlay, "opacity") else 1.0)
+            'overlay_opacity': float(self.overlay.opacity if hasattr(self.overlay, "opacity") else 1.0),
+            'alert_threshold': float(self.alert_threshold)
         }
 
         settings_file = Path.home() / '.tarrow.json'
@@ -1255,8 +1341,12 @@ class tarrow(QObject):
         self.overlay.opacity = opacity
         self.overlay.setWindowOpacity(opacity)
         self.save_settings()
-    def run(self):
 
+    def on_alert_threshold_changed(self, threshold):
+        self.alert_threshold = float(threshold)
+        self.save_settings()
+        
+    def run(self):
         try:
             return self.app.exec()
         finally:
@@ -1271,10 +1361,12 @@ if __name__ == "__main__":
         if hasattr(overlay, 'settings_dialog') and overlay.settings_dialog:
             overlay.settings_dialog.set_current_values(app.show_graphs, app.show_processes, app.update_interval)
             overlay.settings_dialog.set_current_opacity(app.overlay.opacity if hasattr(app.overlay, "opacity") else 1.0)
+            overlay.settings_dialog.set_alert_threshold(app.alert_threshold)
             overlay.settings_dialog.graphs_changed.connect(app.on_graphs_changed)
             overlay.settings_dialog.processes_changed.connect(app.on_processes_changed)
             overlay.settings_dialog.interval_changed.connect(app.on_interval_changed)
             overlay.settings_dialog.opacity_changed.connect(app.on_opacity_changed)
+            overlay.settings_dialog.alert_threshold_changed.connect(app.on_alert_threshold_changed)
     original_show_settings = app.overlay.show_settings_immediate
     def enhanced_show_settings():
         original_show_settings()

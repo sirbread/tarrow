@@ -292,6 +292,7 @@ class EdgeArrow(QWidget):
         self.expand_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         self.expand_animation.finished.connect(self.animation_finished)
         
+        self.screen = QApplication.primaryScreen()
         self.update_sizes_for_edge()
         self.position_on_edge()
         
@@ -309,23 +310,25 @@ class EdgeArrow(QWidget):
         self.is_expanded = self.animation_target_expanded
         
     def position_on_edge(self):
-        screen = QApplication.primaryScreen().geometry()
+        if not self.screen:
+            self.screen = QApplication.primaryScreen()
+        screen_geom = self.screen.geometry()
         
         if self.edge == 'right':
-            x = screen.width() - self.width()
-            y = int(self.edge_position * (screen.height() - self.height()))
+            x = screen_geom.right() - self.width() + 1
+            y = screen_geom.y() + int(self.edge_position * (screen_geom.height() - self.height()))
             self.move(x, y)
         elif self.edge == 'left':
-            x = 0
-            y = int(self.edge_position * (screen.height() - self.height()))
+            x = screen_geom.x()
+            y = screen_geom.y() + int(self.edge_position * (screen_geom.height() - self.height()))
             self.move(x, y)
         elif self.edge == 'top':
-            x = int(self.edge_position * (screen.width() - self.width()))
-            y = 0
+            x = screen_geom.x() + int(self.edge_position * (screen_geom.width() - self.width()))
+            y = screen_geom.y()
             self.move(x, y)
         elif self.edge == 'bottom':
-            x = int(self.edge_position * (screen.width() - self.width()))
-            y = screen.height() - self.height()
+            x = screen_geom.x() + int(self.edge_position * (screen_geom.width() - self.width()))
+            y = screen_geom.bottom() - self.height() + 1
             self.move(x, y)
             
         self.update_pin_indicator_position()
@@ -358,49 +361,79 @@ class EdgeArrow(QWidget):
             self.pin_indicator.hide()
     
     def calculate_edge_and_position(self, global_pos):
-        screen = QApplication.primaryScreen().geometry()
+        screens = QApplication.screens()
         
-        dist_left = global_pos.x()
-        dist_right = screen.width() - global_pos.x()
-        dist_top = global_pos.y()
-        dist_bottom = screen.height() - global_pos.y()
+        for screen in screens:
+            if screen.geometry().contains(global_pos):
+                target_screen = screen
+                break
+        else:
+            #find closest screen if cursor is not inside any
+            #is your baby crying? i'll make them stop!
+            #go to sleeeep go to sleeeep go to sle-e-e-ee-eeep 
+            #go to sleep go to sleep googoogaga time for you~
+
+            min_dist = float('inf')
+            target_screen = None
+            for screen in screens:
+                geom = screen.geometry()
+                dx = max(0, geom.left() - global_pos.x(), global_pos.x() - geom.right())
+                dy = max(0, geom.top() - global_pos.y(), global_pos.y() - geom.bottom())
+                dist = dx*dx + dy*dy
+                if dist < min_dist:
+                    min_dist = dist
+                    target_screen = screen
+
+        if not target_screen:
+             target_screen = QApplication.primaryScreen()
+
+        geom = target_screen.geometry()
+        
+        dist_left = abs(global_pos.x() - geom.left())
+        dist_right = abs(global_pos.x() - geom.right())
+        dist_top = abs(global_pos.y() - geom.top())
+        dist_bottom = abs(global_pos.y() - geom.bottom())
         
         min_dist = min(dist_left, dist_right, dist_top, dist_bottom)
         
         if min_dist == dist_left:
             edge = 'left'
-            position = max(0, min(1, global_pos.y() / (screen.height() - self.height())))
+            position = max(0, min(1, (global_pos.y() - geom.y()) / geom.height()))
         elif min_dist == dist_right:
             edge = 'right'
-            position = max(0, min(1, global_pos.y() / (screen.height() - self.height())))
+            position = max(0, min(1, (global_pos.y() - geom.y()) / geom.height()))
         elif min_dist == dist_top:
             edge = 'top'
-            position = max(0, min(1, global_pos.x() / (screen.width() - self.width())))
+            position = max(0, min(1, (global_pos.x() - geom.x()) / geom.width()))
         else:
             edge = 'bottom'
-            position = max(0, min(1, global_pos.x() / (screen.width() - self.width())))
+            position = max(0, min(1, (global_pos.x() - geom.x()) / geom.width()))
         
-        return edge, position
+        return edge, position, target_screen
     
     def update_drag_preview(self, global_pos):
-        edge, position = self.calculate_edge_and_position(global_pos)
+        edge, position, screen = self.calculate_edge_and_position(global_pos)
         
+        if not screen:
+            return
+
         self.drag_preview.set_edge_and_size(edge)
         
-        screen = QApplication.primaryScreen().geometry()
+        screen_geom = screen.geometry()
         
         if edge == 'right':
-            x = screen.width() - self.drag_preview.width()
-            y = int(position * (screen.height() - self.drag_preview.height()))
+            x = screen_geom.right() - self.drag_preview.width() + 1
+            y = screen_geom.y() + int(position * (screen_geom.height() - self.drag_preview.height()))
         elif edge == 'left':
-            x = 0
-            y = int(position * (screen.height() - self.drag_preview.height()))
+            x = screen_geom.x()
+            y = screen_geom.y() + int(position * (screen_geom.height() - self.drag_preview.height()))
         elif edge == 'top':
-            x = int(position * (screen.width() - self.drag_preview.width()))
-            y = 0
-        else:
-            x = int(position * (screen.width() - self.drag_preview.width()))
-            y = screen.height() - self.drag_preview.height()
+            x = screen_geom.x() + int(position * (screen_geom.width() - self.drag_preview.width()))
+            y = screen_geom.y()
+        else: # bottom
+            x = screen_geom.x() + int(position * (screen_geom.width() - self.drag_preview.width()))
+            y = screen_geom.bottom() - self.drag_preview.height() + 1
+
         
         self.drag_preview.move(x, y)
         self.drag_preview.update()
@@ -506,14 +539,17 @@ class EdgeArrow(QWidget):
             
             self.drag_preview.hide()
             
-            edge, position = self.calculate_edge_and_position(event.globalPosition().toPoint())
-            old_edge = self.edge
-            self.edge = edge
-            self.edge_position = position
+            edge, position, screen = self.calculate_edge_and_position(event.globalPosition().toPoint())
             
-            if ((old_edge in ['left', 'right'] and edge in ['top', 'bottom']) or
-                (old_edge in ['top', 'bottom'] and edge in ['left', 'right'])):
-                self.update_sizes_for_edge()
+            if screen:
+                old_edge = self.edge
+                self.edge = edge
+                self.edge_position = position
+                self.screen = screen
+                
+                if ((old_edge in ['left', 'right'] and edge in ['top', 'bottom']) or
+                    (old_edge in ['top', 'bottom'] and edge in ['left', 'right'])):
+                    self.update_sizes_for_edge()
             
             self.position_on_edge()
             self.update()
@@ -1083,12 +1119,15 @@ class SystemMonitorApp(QObject):
             self.overlay.hide()
             self.overlay_visible = False
     def on_drag_finished(self):
+        self.save_settings()
         if self.overlay.is_pinned:
             self.position_and_show_overlay()
+
     def position_and_show_overlay(self):
         arrow_pos = self.arrow.pos()
         arrow_size = self.arrow.size()
-        screen = QApplication.primaryScreen().geometry()
+        screen_geom = self.arrow.screen.geometry()
+
         if self.arrow.edge == 'right':
             overlay_x = arrow_pos.x() - self.overlay.width() - 10
             overlay_y = arrow_pos.y() + (arrow_size.height() // 2) - (self.overlay.height() // 2)
@@ -1098,19 +1137,22 @@ class SystemMonitorApp(QObject):
         elif self.arrow.edge == 'top':
             overlay_x = arrow_pos.x() + (arrow_size.width() // 2) - (self.overlay.width() // 2)
             overlay_y = arrow_pos.y() + arrow_size.height() + 10
-        else:
+        else: # bottom
             overlay_x = arrow_pos.x() + (arrow_size.width() // 2) - (self.overlay.width() // 2)
             overlay_y = arrow_pos.y() - self.overlay.height() - 10
+        
         self.overlay.move(overlay_x, overlay_y)
+        
         overlay_rect = self.overlay.geometry()
-        if overlay_rect.right() > screen.right():
-            self.overlay.move(screen.right() - self.overlay.width(), overlay_rect.y())
-        if overlay_rect.left() < 0:
-            self.overlay.move(0, overlay_rect.y())
-        if overlay_rect.bottom() > screen.bottom():
-            self.overlay.move(overlay_rect.x(), screen.bottom() - self.overlay.height())
-        if overlay_rect.top() < 0:
-            self.overlay.move(overlay_rect.x(), 0)
+        if overlay_rect.right() > screen_geom.right():
+            self.overlay.move(screen_geom.right() - self.overlay.width(), overlay_rect.y())
+        if overlay_rect.left() < screen_geom.left():
+            self.overlay.move(screen_geom.left(), overlay_rect.y())
+        if overlay_rect.bottom() > screen_geom.bottom():
+            self.overlay.move(overlay_rect.x(), screen_geom.bottom() - self.overlay.height())
+        if overlay_rect.top() < screen_geom.top():
+            self.overlay.move(overlay_rect.x(), screen_geom.top())
+
         self.overlay.show()
         self.overlay_visible = True
         self.overlay.installEventFilter(self.overlay_filter)
@@ -1126,7 +1168,17 @@ class SystemMonitorApp(QObject):
             try:
                 with open(settings_file, 'r') as f:
                     settings = json.load(f)
-                    
+                
+                screen_name = settings.get('screen_name')
+                screens = self.app.screens()
+                target_screen = None
+                if screen_name:
+                    for s in screens:
+                        if s.name() == screen_name:
+                            target_screen = s
+                            break
+                self.arrow.screen = target_screen or self.app.primaryScreen()
+
                 self.arrow.edge = settings.get('edge', 'right')
                 self.arrow.edge_position = settings.get('edge_position', 0.5)
                 self.arrow.update_sizes_for_edge()
@@ -1147,6 +1199,7 @@ class SystemMonitorApp(QObject):
 
     def save_settings(self):
         settings = {
+            'screen_name': self.arrow.screen.name() if self.arrow.screen else '',
             'edge': self.arrow.edge,
             'edge_position': self.arrow.edge_position,
             'show_graphs': self.show_graphs,

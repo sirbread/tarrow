@@ -573,6 +573,8 @@ class StatsOverlay(QWidget):
         self.loading = True
         self.is_pinned = False
         self.ui_setup_complete = False
+        self.opacity = 1.0
+        self.parent_update_interval = 2.0
         
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(15, 15, 15, 15)
@@ -580,6 +582,7 @@ class StatsOverlay(QWidget):
         
         self.setup_ui()
         self.resize(320, 200)
+        self.setWindowOpacity(self.opacity)
         
     def setup_ui(self):
         if self.ui_setup_complete and not self.loading:
@@ -861,6 +864,9 @@ class StatsOverlay(QWidget):
             self.settings_dialog.graphs_changed.connect(self.change_graphs)
             self.settings_dialog.processes_changed.connect(self.change_processes)
             self.settings_dialog.interval_changed.connect(self.change_interval)
+            self.settings_dialog.opacity_changed.connect(self.change_opacity)
+        self.settings_dialog.set_current_values(self.show_graphs, self.show_processes, self.parent_update_interval)
+        self.settings_dialog.set_current_opacity(self.opacity)
         self.settings_dialog.show()
         self.settings_dialog.raise_()
         self.settings_dialog.activateWindow()
@@ -877,6 +883,12 @@ class StatsOverlay(QWidget):
     
     def change_interval(self, interval):
         pass
+
+    def change_opacity(self, opacity):
+        self.opacity = opacity
+        self.setWindowOpacity(opacity)
+        if hasattr(self.parent(), 'save_settings'):
+            self.parent().save_settings()
         
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -892,17 +904,17 @@ class SettingsDialog(QWidget):
     graphs_changed = pyqtSignal(bool)
     processes_changed = pyqtSignal(bool)
     interval_changed = pyqtSignal(float)
+    opacity_changed = pyqtSignal(float)
     
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("tarrow")
         self.setWindowFlags(Qt.WindowType.Dialog)
-        self.resize(400, 250)
-        
+        self.resize(400, 280)
         self.current_show_graphs = parent.show_graphs if parent else True
         self.current_show_processes = parent.show_processes if parent else True
-        self.current_interval = 2.0
-        
+        self.current_interval = getattr(parent, "parent_update_interval", getattr(parent, "update_interval", 2.0))
+        self.current_opacity = getattr(parent, "opacity", 1.0)
         self.setup_ui()
         
     def setup_ui(self):
@@ -936,7 +948,18 @@ class SettingsDialog(QWidget):
         interval_layout.addWidget(interval_label)
         interval_layout.addWidget(self.interval_spin)
         layout.addLayout(interval_layout)
-        
+        opacity_layout = QHBoxLayout()
+        opacity_label = QLabel("Overlay Opacity:")
+        self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.opacity_slider.setRange(30, 100)
+        self.opacity_slider.setValue(int(self.current_opacity * 100))
+        self.opacity_slider.setSingleStep(1)
+        self.opacity_slider.valueChanged.connect(self.on_opacity_changed)
+        self.opacity_value_label = QLabel(f"{self.current_opacity:.2f}")
+        opacity_layout.addWidget(opacity_label)
+        opacity_layout.addWidget(self.opacity_slider)
+        opacity_layout.addWidget(self.opacity_value_label)
+        layout.addLayout(opacity_layout)
         apply_btn = QPushButton("Apply")
         apply_btn.clicked.connect(self.apply_settings)
         layout.addWidget(apply_btn)
@@ -951,15 +974,25 @@ class SettingsDialog(QWidget):
             self.processes_checkbox.setChecked(show_processes)
         if hasattr(self, 'interval_spin'):
             self.interval_spin.setValue(self.current_interval)
-    
+    def set_current_opacity(self, opacity):
+        self.current_opacity = opacity
+        if hasattr(self, "opacity_slider"):
+            self.opacity_slider.setValue(int(opacity * 100))
+        if hasattr(self, "opacity_value_label"):
+            self.opacity_value_label.setText(f"{opacity:.2f}")
     def on_graphs_changed_immediate(self, checked):
         self.graphs_changed.emit(checked)
         
     def on_processes_changed_immediate(self, checked):
         self.processes_changed.emit(checked)
-        
+    def on_opacity_changed(self, value):
+        opacity = value / 100.0
+        self.current_opacity = opacity
+        self.opacity_value_label.setText(f"{opacity:.2f}")
+        self.opacity_changed.emit(opacity)
     def apply_settings(self):
         self.interval_changed.emit(self.interval_spin.value())
+        self.opacity_changed.emit(self.current_opacity)
         self.close()
 
 class OverlayEventFilter(QObject):
@@ -988,7 +1021,7 @@ class SystemMonitorApp(QObject):
         self.show_graphs = True
         self.show_processes = True
         self.update_interval = 2.0
-        
+        self.overlay_opacity = 1.0
         self.arrow = EdgeArrow()
         self.arrow.hover_show.connect(self.show_overlay_on_hover)
         self.arrow.click_toggle_pin.connect(self.toggle_pin_overlay)
@@ -1012,9 +1045,11 @@ class SystemMonitorApp(QObject):
         self.stats_worker.stats_updated.connect(self.update_overlay_stats)
         self.stats_worker.first_load_complete.connect(self.overlay.first_load_complete)
         self.stats_worker.start()
-        
+
         self.load_settings()
-        
+        self.overlay.setWindowOpacity(self.overlay_opacity)
+        self.overlay.opacity = self.overlay_opacity
+        self.overlay.parent_update_interval = self.update_interval
     def update_overlay_stats(self, stats):
         if self.overlay_visible:
             self.overlay.update_stats(stats)
@@ -1034,33 +1069,26 @@ class SystemMonitorApp(QObject):
         if not cursor_over_arrow and not cursor_over_overlay:
             self.overlay.hide()
             self.overlay_visible = False
-        
     def show_overlay_on_hover(self):
         if not self.overlay_visible:
             self.position_and_show_overlay()
-        
     def toggle_pin_overlay(self):
         new_pinned = not self.overlay.is_pinned
         self.overlay.is_pinned = new_pinned
         self.arrow.set_pinned(new_pinned)
-        
         if not self.overlay_visible:
             self.position_and_show_overlay()
-        
     def on_drag_started(self):
         if self.overlay_visible:
             self.overlay.hide()
             self.overlay_visible = False
-            
     def on_drag_finished(self):
         if self.overlay.is_pinned:
             self.position_and_show_overlay()
-        
     def position_and_show_overlay(self):
         arrow_pos = self.arrow.pos()
         arrow_size = self.arrow.size()
         screen = QApplication.primaryScreen().geometry()
-        
         if self.arrow.edge == 'right':
             overlay_x = arrow_pos.x() - self.overlay.width() - 10
             overlay_y = arrow_pos.y() + (arrow_size.height() // 2) - (self.overlay.height() // 2)
@@ -1073,9 +1101,7 @@ class SystemMonitorApp(QObject):
         else:
             overlay_x = arrow_pos.x() + (arrow_size.width() // 2) - (self.overlay.width() // 2)
             overlay_y = arrow_pos.y() - self.overlay.height() - 10
-        
         self.overlay.move(overlay_x, overlay_y)
-        
         overlay_rect = self.overlay.geometry()
         if overlay_rect.right() > screen.right():
             self.overlay.move(screen.right() - self.overlay.width(), overlay_rect.y())
@@ -1085,21 +1111,15 @@ class SystemMonitorApp(QObject):
             self.overlay.move(overlay_rect.x(), screen.bottom() - self.overlay.height())
         if overlay_rect.top() < 0:
             self.overlay.move(overlay_rect.x(), 0)
-        
         self.overlay.show()
         self.overlay_visible = True
-        
         self.overlay.installEventFilter(self.overlay_filter)
-            
     def on_overlay_leave(self):
         pass
-            
     def on_overlay_enter(self):
         pass
-        
     def on_overlay_click(self):
         pass
-    
     def load_settings(self):
         settings_file = Path.home() / '.system_monitor_settings.json'
         if settings_file.exists():
@@ -1115,35 +1135,38 @@ class SystemMonitorApp(QObject):
                 self.show_graphs = settings.get('show_graphs', True)
                 self.show_processes = settings.get('show_processes', True)
                 self.update_interval = float(settings.get('update_interval', 2.0))
-                
+                self.overlay_opacity = float(settings.get('overlay_opacity', 1.0))
                 self.overlay.show_graphs = self.show_graphs
                 self.overlay.show_processes = self.show_processes
                 self.stats_worker.set_update_interval(self.update_interval)
-                    
+                self.overlay.opacity = self.overlay_opacity
+                self.overlay.setWindowOpacity(self.overlay_opacity)
+                self.overlay.parent_update_interval = self.update_interval
             except Exception as e:
                 print(f"Error loading settings: {e}")
-    
+
     def save_settings(self):
         settings = {
             'edge': self.arrow.edge,
             'edge_position': self.arrow.edge_position,
             'show_graphs': self.show_graphs,
             'show_processes': self.show_processes,
-            'update_interval': float(self.update_interval)
+            'update_interval': float(self.update_interval),
+            'overlay_opacity': float(self.overlay.opacity if hasattr(self.overlay, "opacity") else 1.0)
         }
-        
+
         settings_file = Path.home() / '.system_monitor_settings.json'
         try:
             with open(settings_file, 'w') as f:
                 json.dump(settings, f, indent=2)
         except Exception as e:
             print(f"Error saving settings: {e}")
-    
+
     def on_graphs_changed(self, show_graphs):
         self.show_graphs = show_graphs
         self.overlay.change_graphs(show_graphs)
         self.save_settings()
-    
+
     def on_processes_changed(self, show_processes):
         self.show_processes = show_processes
         self.overlay.change_processes(show_processes)
@@ -1152,9 +1175,15 @@ class SystemMonitorApp(QObject):
     def on_interval_changed(self, interval):
         self.update_interval = float(interval)
         self.stats_worker.set_update_interval(interval)
+        self.overlay.parent_update_interval = self.update_interval
         self.save_settings()
-    
+    def on_opacity_changed(self, opacity):
+        self.overlay_opacity = opacity
+        self.overlay.opacity = opacity
+        self.overlay.setWindowOpacity(opacity)
+        self.save_settings()
     def run(self):
+
         try:
             return self.app.exec()
         finally:
@@ -1164,18 +1193,19 @@ class SystemMonitorApp(QObject):
 
 if __name__ == "__main__":
     app = SystemMonitorApp()
-    
+
     def connect_settings_signals(overlay):
         if hasattr(overlay, 'settings_dialog') and overlay.settings_dialog:
             overlay.settings_dialog.set_current_values(app.show_graphs, app.show_processes, app.update_interval)
+            overlay.settings_dialog.set_current_opacity(app.overlay.opacity if hasattr(app.overlay, "opacity") else 1.0)
             overlay.settings_dialog.graphs_changed.connect(app.on_graphs_changed)
             overlay.settings_dialog.processes_changed.connect(app.on_processes_changed)
             overlay.settings_dialog.interval_changed.connect(app.on_interval_changed)
-    
+            overlay.settings_dialog.opacity_changed.connect(app.on_opacity_changed)
     original_show_settings = app.overlay.show_settings_immediate
     def enhanced_show_settings():
         original_show_settings()
         QTimer.singleShot(50, lambda: connect_settings_signals(app.overlay))
     app.overlay.show_settings_immediate = enhanced_show_settings
-    
+
     sys.exit(app.run())

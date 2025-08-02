@@ -91,8 +91,11 @@ class SystemStatsWorker(QThread):
                 
                 top_cpu, top_memory = self.get_top_processes()
                 
+                cpu_temp = self.get_cpu_temperature()
+
                 stats = {
                     'cpu': cpu_percent,
+                    'cpu_temp': cpu_temp,
                     'memory': mem_stats,
                     'disk': disk_stats,
                     'network': net_stats,
@@ -116,6 +119,26 @@ class SystemStatsWorker(QThread):
             except Exception as e:
                 print(f"Error collecting stats: {e}")
                 time.sleep(self.update_interval)
+
+    def get_cpu_temperature(self):
+        try:
+            if hasattr(psutil, "sensors_temperatures"):
+                temps = psutil.sensors_temperatures()
+                if not temps:
+                    return "N/A"
+                
+                for name in temps:
+                    if 'core' in name.lower() or 'cpu' in name.lower() or 'k10' in name.lower() or 'zen' in name.lower():
+                        if temps[name]:
+                            return f"{temps[name][0].current:.0f}C"
+                
+                for name in temps:
+                    if temps[name]:
+                        return f"{temps[name][0].current:.0f}C"
+
+            return "N/A"
+        except Exception as e:
+            return "N/A"
 
     def get_top_processes(self):
         #optim: use cached process information if recent enough
@@ -718,7 +741,6 @@ class HistoryGraph(QWidget):
         painter.setPen(pen)
         painter.drawPath(path)
 
-
 class StatsOverlay(QWidget):
     
     def __init__(self, parent=None):
@@ -731,6 +753,7 @@ class StatsOverlay(QWidget):
         self.show_cpu = True
         self.show_ram = True
         self.show_disk = True
+        self.show_temp = True
         self.show_graphs = True
         self.show_processes = False
         self.show_history = True
@@ -846,6 +869,9 @@ class StatsOverlay(QWidget):
             if self.show_history:
                 widget_height += visible_stats * 35
 
+            if self.show_temp:
+                widget_height += 40
+
             top_cpu = self.current_stats.get('top_cpu', [])
             top_mem = self.current_stats.get('top_memory', [])
             
@@ -872,6 +898,12 @@ class StatsOverlay(QWidget):
                 if widget:
                     widget.setParent(None)
         
+        if self.show_temp:
+            cpu_temp = stats.get('cpu_temp', 'N/A')
+            if cpu_temp != "N/A":
+                temp_widget = self.create_info_widget("CPU Temp", cpu_temp)
+                self.stats_layout.addWidget(temp_widget)
+
         if self.show_cpu:
             cpu_usage = stats.get('cpu', 0)
             cpu_history = stats.get('cpu_history', [])
@@ -906,7 +938,6 @@ class StatsOverlay(QWidget):
             )
             self.stats_layout.addWidget(disk_widget)
         
-
         top_cpu = stats.get('top_cpu', [])
         top_mem = stats.get('top_memory', [])
         
@@ -919,7 +950,32 @@ class StatsOverlay(QWidget):
             self.stats_layout.addWidget(mem_processes_widget)
         
         self.update_size()
+
+    def create_info_widget(self, title, value):
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(12, 10, 12, 10)
         
+        widget.setStyleSheet(f"""
+            QWidget {{
+                background-color: {CatppuccinTheme.get_color('surface0')};
+                border-radius: 8px;
+                border: 1px solid {CatppuccinTheme.get_color('surface2')};
+            }}
+        """)
+        
+        title_label = QLabel(title)
+        title_label.setStyleSheet(f"color: {CatppuccinTheme.get_color('subtext1')}; font-weight: bold; font-size: 13px;")
+        
+        value_label = QLabel(value)
+        value_label.setStyleSheet(f"color: {CatppuccinTheme.get_color('text')}; font-size: 13px;")
+        
+        layout.addWidget(title_label)
+        layout.addStretch()
+        layout.addWidget(value_label)
+        
+        return widget
+
     def create_stat_widget(self, title, value, percentage, color_name, history):
         widget = QWidget()
         layout = QVBoxLayout(widget)
@@ -1053,13 +1109,14 @@ class StatsOverlay(QWidget):
             self.settings_dialog.cpu_changed.connect(self.change_cpu_visibility)
             self.settings_dialog.ram_changed.connect(self.change_ram_visibility)
             self.settings_dialog.disk_changed.connect(self.change_disk_visibility)
+            self.settings_dialog.temp_changed.connect(self.change_temp_visibility)
             self.settings_dialog.graphs_changed.connect(self.change_graphs)
             self.settings_dialog.processes_changed.connect(self.change_processes)
             self.settings_dialog.history_changed.connect(self.change_history)
             self.settings_dialog.interval_changed.connect(self.change_interval)
             self.settings_dialog.opacity_changed.connect(self.change_opacity)
         self.settings_dialog.set_current_values(
-            self.show_cpu, self.show_ram, self.show_disk,
+            self.show_cpu, self.show_ram, self.show_disk, self.show_temp,
             self.show_graphs, self.show_processes, self.show_history, self.parent_update_interval
         )
         self.settings_dialog.set_current_opacity(self.opacity)
@@ -1084,6 +1141,10 @@ class StatsOverlay(QWidget):
         if hasattr(self, 'current_stats') and self.current_stats:
             self.update_stats(self.current_stats)
 
+    def change_temp_visibility(self, show):
+        self.show_temp = show
+        if hasattr(self, 'current_stats') and self.current_stats:
+            self.update_stats(self.current_stats)
 
     def change_graphs(self, show_graphs):
         self.show_graphs = show_graphs
@@ -1123,6 +1184,7 @@ class SettingsDialog(QWidget):
     cpu_changed = pyqtSignal(bool)
     ram_changed = pyqtSignal(bool)
     disk_changed = pyqtSignal(bool)
+    temp_changed = pyqtSignal(bool)
     graphs_changed = pyqtSignal(bool)
     processes_changed = pyqtSignal(bool)
     history_changed = pyqtSignal(bool)
@@ -1138,6 +1200,7 @@ class SettingsDialog(QWidget):
         self.current_show_cpu = parent.show_cpu if parent else True
         self.current_show_ram = parent.show_ram if parent else True
         self.current_show_disk = parent.show_disk if parent else True
+        self.current_show_temp = parent.show_temp if parent else True
         self.current_show_graphs = parent.show_graphs if parent else True
         self.current_show_processes = parent.show_processes if parent else True
         self.current_show_history = parent.show_history if parent else True
@@ -1155,8 +1218,7 @@ class SettingsDialog(QWidget):
                 child = layout.itemAt(i).widget()
                 if child:
                     child.setParent(None)
- 
-       
+        
         self.cpu_checkbox = QCheckBox("Show CPU Usage")
         self.cpu_checkbox.setChecked(self.current_show_cpu)
         self.cpu_checkbox.toggled.connect(self.on_cpu_changed_immediate)
@@ -1171,6 +1233,11 @@ class SettingsDialog(QWidget):
         self.disk_checkbox.setChecked(self.current_show_disk)
         self.disk_checkbox.toggled.connect(self.on_disk_changed_immediate)
         layout.addWidget(self.disk_checkbox)
+
+        self.temp_checkbox = QCheckBox("Show CPU Temperature")
+        self.temp_checkbox.setChecked(self.current_show_temp)
+        self.temp_checkbox.toggled.connect(self.on_temp_changed_immediate)
+        layout.addWidget(self.temp_checkbox)
 
         self.graphs_checkbox = QCheckBox("Show Progress Bars")
         self.graphs_checkbox.setChecked(self.current_show_graphs)
@@ -1227,10 +1294,11 @@ class SettingsDialog(QWidget):
         apply_btn.clicked.connect(self.apply_settings)
         layout.addWidget(apply_btn)
         
-    def set_current_values(self, show_cpu, show_ram, show_disk, show_graphs, show_processes, show_history, interval):
+    def set_current_values(self, show_cpu, show_ram, show_disk, show_temp, show_graphs, show_processes, show_history, interval):
         self.current_show_cpu = show_cpu
         self.current_show_ram = show_ram
         self.current_show_disk = show_disk
+        self.current_show_temp = show_temp
         self.current_show_graphs = show_graphs
         self.current_show_processes = show_processes
         self.current_show_history = show_history
@@ -1239,6 +1307,7 @@ class SettingsDialog(QWidget):
         if hasattr(self, 'cpu_checkbox'): self.cpu_checkbox.setChecked(show_cpu)
         if hasattr(self, 'ram_checkbox'): self.ram_checkbox.setChecked(show_ram)
         if hasattr(self, 'disk_checkbox'): self.disk_checkbox.setChecked(show_disk)
+        if hasattr(self, 'temp_checkbox'): self.temp_checkbox.setChecked(show_temp)
         if hasattr(self, 'graphs_checkbox'): self.graphs_checkbox.setChecked(show_graphs)
         if hasattr(self, 'processes_checkbox'): self.processes_checkbox.setChecked(show_processes)
         if hasattr(self, 'history_checkbox'): self.history_checkbox.setChecked(show_history)
@@ -1259,10 +1328,10 @@ class SettingsDialog(QWidget):
     def on_cpu_changed_immediate(self, checked): self.cpu_changed.emit(checked)
     def on_ram_changed_immediate(self, checked): self.ram_changed.emit(checked)
     def on_disk_changed_immediate(self, checked): self.disk_changed.emit(checked)
+    def on_temp_changed_immediate(self, checked): self.temp_changed.emit(checked)
     def on_graphs_changed_immediate(self, checked): self.graphs_changed.emit(checked)
     def on_processes_changed_immediate(self, checked): self.processes_changed.emit(checked)
     def on_history_changed_immediate(self, checked): self.history_changed.emit(checked)
-
 
     def on_opacity_changed(self, value):
         opacity = value / 100.0
@@ -1302,6 +1371,7 @@ class tarrow(QObject):
         self.show_cpu = True
         self.show_ram = True
         self.show_disk = True
+        self.show_temp = True
         self.show_graphs = True
         self.show_processes = True
         self.show_history = True
@@ -1450,6 +1520,7 @@ class tarrow(QObject):
                 self.show_cpu = settings.get('show_cpu', True)
                 self.show_ram = settings.get('show_ram', True)
                 self.show_disk = settings.get('show_disk', True)
+                self.show_temp = settings.get('show_temp', True)
                 self.show_graphs = settings.get('show_graphs', True)
                 self.show_processes = settings.get('show_processes', True)
                 self.show_history = settings.get('show_history', True)
@@ -1460,6 +1531,7 @@ class tarrow(QObject):
                 self.overlay.show_cpu = self.show_cpu
                 self.overlay.show_ram = self.show_ram
                 self.overlay.show_disk = self.show_disk
+                self.overlay.show_temp = self.show_temp
                 self.overlay.show_graphs = self.show_graphs
                 self.overlay.show_processes = self.show_processes
                 self.overlay.show_history = self.show_history
@@ -1478,6 +1550,7 @@ class tarrow(QObject):
             'show_cpu': self.show_cpu,
             'show_ram': self.show_ram,
             'show_disk': self.show_disk,
+            'show_temp': self.show_temp,
             'show_graphs': self.show_graphs,
             'show_processes': self.show_processes,
             'show_history': self.show_history,
@@ -1508,6 +1581,10 @@ class tarrow(QObject):
         self.overlay.change_disk_visibility(show)
         self.save_settings()
 
+    def on_temp_changed(self, show):
+        self.show_temp = show
+        self.overlay.change_temp_visibility(show)
+        self.save_settings()
 
     def on_graphs_changed(self, show_graphs):
         self.show_graphs = show_graphs
@@ -1553,7 +1630,7 @@ if __name__ == "__main__":
     def connect_settings_signals(overlay):
         if hasattr(overlay, 'settings_dialog') and overlay.settings_dialog:
             overlay.settings_dialog.set_current_values(
-                app.show_cpu, app.show_ram, app.show_disk,
+                app.show_cpu, app.show_ram, app.show_disk, app.show_temp,
                 app.show_graphs, app.show_processes, app.show_history, app.update_interval
             )
             overlay.settings_dialog.set_current_opacity(app.overlay.opacity if hasattr(app.overlay, "opacity") else 1.0)
@@ -1561,6 +1638,7 @@ if __name__ == "__main__":
             overlay.settings_dialog.cpu_changed.connect(app.on_cpu_changed)
             overlay.settings_dialog.ram_changed.connect(app.on_ram_changed)
             overlay.settings_dialog.disk_changed.connect(app.on_disk_changed)
+            overlay.settings_dialog.temp_changed.connect(app.on_temp_changed)
             overlay.settings_dialog.graphs_changed.connect(app.on_graphs_changed)
             overlay.settings_dialog.processes_changed.connect(app.on_processes_changed)
             overlay.settings_dialog.history_changed.connect(app.on_history_changed)

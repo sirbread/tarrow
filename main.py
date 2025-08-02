@@ -6,14 +6,15 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                             QLabel, QPushButton, QSlider, QCheckBox, QComboBox,
                             QListWidget, QTabWidget, QColorDialog, QSpinBox,
                             QSystemTrayIcon, QMenu, QDoubleSpinBox)
-from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QRect, pyqtSignal, QThread, QPoint, QObject
-from PyQt6.QtGui import QPainter, QPen, QBrush, QColor, QFont, QIcon, QPixmap, QCursor
+from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QRect, pyqtSignal, QThread, QPoint, QObject, QPointF
+from PyQt6.QtGui import QPainter, QPen, QBrush, QColor, QFont, QIcon, QPixmap, QCursor, QPainterPath
 
 import psutil
 import platform
 import time
 from datetime import datetime
 from functools import lru_cache
+from collections import deque
 
 class CatppuccinTheme:
     COLORS = {
@@ -67,17 +68,25 @@ class SystemStatsWorker(QThread):
         self.process_cache = []
         self.process_check_interval = 5.0  #opti: check processes every 5 seconds you can change this too 
 
+        self.history_length = 60
+        self.cpu_history = deque(maxlen=self.history_length)
+        self.mem_history = deque(maxlen=self.history_length)
+        self.disk_history = deque(maxlen=self.history_length)
+
     def run(self):
         while self.running:
             try:
                 start_time = time.time()
                 
                 cpu_percent = psutil.cpu_percent(interval=None)
+                self.cpu_history.append(cpu_percent)
                 
                 mem_stats = self.get_memory_usage()
+                self.mem_history.append(mem_stats['percent'])
                 
                 disk_stats = self.get_disk_usage()
-                
+                self.disk_history.append(disk_stats['percent'])
+
                 net_stats = self.get_network_stats()
                 
                 top_cpu, top_memory = self.get_top_processes()
@@ -88,7 +97,10 @@ class SystemStatsWorker(QThread):
                     'disk': disk_stats,
                     'network': net_stats,
                     'top_cpu': top_cpu,
-                    'top_memory': top_memory
+                    'top_memory': top_memory,
+                    'cpu_history': list(self.cpu_history),
+                    'mem_history': list(self.mem_history),
+                    'disk_history': list(self.disk_history)
                 }
                 
                 self.stats_updated.emit(stats)
@@ -661,6 +673,52 @@ class ProgressBar(QWidget):
             painter.setBrush(QBrush(fill_color))
             painter.drawRoundedRect(fill_rect, 4, 4)
 
+class HistoryGraph(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.history = []
+        self.color = '#89b4fa'
+        self.setFixedHeight(30)
+    
+    def set_history(self, history):
+        self.history = history
+        self.update()
+        
+    def set_color(self, color):
+        self.color = color
+        self.update()
+        
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        if not self.history:
+            return
+        
+        width = self.width()
+        height = self.height()
+        
+        path = QPainterPath()
+        
+        points = []
+        max_len = 60
+        num_points = len(self.history)
+        
+        for i, val in enumerate(self.history):
+            x = (i / max(1, max_len - 1)) * width
+            y = height - (val / 100.0) * height
+            points.append(QPointF(x, y))
+        
+        if points:
+            path.moveTo(points[0])
+            for i in range(len(points) - 1):
+                path.lineTo(points[i+1])
+        
+        pen = QPen(QColor(self.color), 2)
+        painter.setPen(pen)
+        painter.drawPath(path)
+
+
 class StatsOverlay(QWidget):
     
     def __init__(self, parent=None):
@@ -672,6 +730,7 @@ class StatsOverlay(QWidget):
         
         self.show_graphs = True
         self.show_processes = False
+        self.show_history = True
         self.current_stats = {}
         self.loading = True
         self.is_pinned = False
@@ -773,8 +832,12 @@ class StatsOverlay(QWidget):
         widget_height = 0
         
         if not self.loading and hasattr(self, 'current_stats') and self.current_stats:
-            widget_height += 3 * (50 if self.show_graphs else 40)
-            
+            widget_height += 3 * 40 # base for 3 stats
+            if self.show_graphs:
+                widget_height += 3 * 10
+            if self.show_history:
+                widget_height += 3 * 35
+
             top_cpu = self.current_stats.get('top_cpu', [])
             top_mem = self.current_stats.get('top_memory', [])
             
@@ -786,7 +849,7 @@ class StatsOverlay(QWidget):
         return base_height + widget_height
     
     def update_size(self):
-        new_height = min(self.calculate_content_height(), 500)
+        new_height = min(self.calculate_content_height(), 800)
         self.resize(320, new_height)
         
     def update_stats(self, stats):
@@ -802,28 +865,33 @@ class StatsOverlay(QWidget):
                     widget.setParent(None)
         
         cpu_usage = stats.get('cpu', 0)
-        cpu_widget = self.create_stat_widget("CPU Usage", f"{cpu_usage:.2f}%", cpu_usage, 'red')
+        cpu_history = stats.get('cpu_history', [])
+        cpu_widget = self.create_stat_widget("CPU Usage", f"{cpu_usage:.2f}%", cpu_usage, 'red', cpu_history)
         self.stats_layout.addWidget(cpu_widget)
         
         mem_stats = stats.get('memory', {})
         mem_percent = mem_stats.get('percent', 0)
         mem_used = mem_stats.get('used', 0)
+        mem_history = stats.get('mem_history', [])
         mem_widget = self.create_stat_widget(
             "Memory", 
             f"{mem_percent:.1f}% ({self.format_bytes(mem_used)})",
             mem_percent,
-            'blue'
+            'blue',
+            mem_history
         )
         self.stats_layout.addWidget(mem_widget)
         
         disk_stats = stats.get('disk', {})
         disk_percent = disk_stats.get('percent', 0)
         disk_used = disk_stats.get('used', 0)
+        disk_history = stats.get('disk_history', [])
         disk_widget = self.create_stat_widget(
             "Disk", 
             f"{disk_percent:.1f}% ({self.format_bytes(disk_used)})",
             disk_percent,
-            'green'
+            'green',
+            disk_history
         )
         self.stats_layout.addWidget(disk_widget)
         
@@ -840,7 +908,7 @@ class StatsOverlay(QWidget):
         
         self.update_size()
         
-    def create_stat_widget(self, title, value, percentage, color_name):
+    def create_stat_widget(self, title, value, percentage, color_name, history):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(12, 10, 12, 10)
@@ -884,6 +952,12 @@ class StatsOverlay(QWidget):
             progress_bar.set_percentage(percentage)
             progress_bar.set_color(CatppuccinTheme.get_color(color_name))
             layout.addWidget(progress_bar)
+
+        if self.show_history:
+            history_graph = HistoryGraph()
+            history_graph.set_history(history)
+            history_graph.set_color(CatppuccinTheme.get_color(color_name))
+            layout.addWidget(history_graph)
         
         return widget
     
@@ -966,9 +1040,10 @@ class StatsOverlay(QWidget):
             self.settings_dialog = SettingsDialog(self)
             self.settings_dialog.graphs_changed.connect(self.change_graphs)
             self.settings_dialog.processes_changed.connect(self.change_processes)
+            self.settings_dialog.history_changed.connect(self.change_history)
             self.settings_dialog.interval_changed.connect(self.change_interval)
             self.settings_dialog.opacity_changed.connect(self.change_opacity)
-        self.settings_dialog.set_current_values(self.show_graphs, self.show_processes, self.parent_update_interval)
+        self.settings_dialog.set_current_values(self.show_graphs, self.show_processes, self.show_history, self.parent_update_interval)
         self.settings_dialog.set_current_opacity(self.opacity)
         if hasattr(self.parent(), "alert_threshold"):
             self.settings_dialog.set_alert_threshold(self.parent().alert_threshold)
@@ -983,6 +1058,11 @@ class StatsOverlay(QWidget):
     
     def change_processes(self, show_processes):
         self.show_processes = show_processes
+        if hasattr(self, 'current_stats') and self.current_stats:
+            self.update_stats(self.current_stats)
+
+    def change_history(self, show_history):
+        self.show_history = show_history
         if hasattr(self, 'current_stats') and self.current_stats:
             self.update_stats(self.current_stats)
     
@@ -1008,6 +1088,7 @@ class StatsOverlay(QWidget):
 class SettingsDialog(QWidget):
     graphs_changed = pyqtSignal(bool)
     processes_changed = pyqtSignal(bool)
+    history_changed = pyqtSignal(bool)
     interval_changed = pyqtSignal(float)
     opacity_changed = pyqtSignal(float)
     alert_threshold_changed = pyqtSignal(float)
@@ -1019,6 +1100,7 @@ class SettingsDialog(QWidget):
         self.resize(400, 300)
         self.current_show_graphs = parent.show_graphs if parent else True
         self.current_show_processes = parent.show_processes if parent else True
+        self.current_show_history = parent.show_history if parent else True
         self.current_interval = getattr(parent, "parent_update_interval", getattr(parent, "update_interval", 2.0))
         self.current_opacity = getattr(parent, "opacity", 1.0)
         self.current_threshold = getattr(parent.parent(), "alert_threshold", 95.0) if parent and hasattr(parent, "parent") else 95.0
@@ -1039,6 +1121,11 @@ class SettingsDialog(QWidget):
         self.graphs_checkbox.toggled.connect(self.on_graphs_changed_immediate)
         layout.addWidget(self.graphs_checkbox)
         
+        self.history_checkbox = QCheckBox("Show History Graphs")
+        self.history_checkbox.setChecked(self.current_show_history)
+        self.history_checkbox.toggled.connect(self.on_history_changed_immediate)
+        layout.addWidget(self.history_checkbox)
+
         self.processes_checkbox = QCheckBox("Show Top Processes")
         self.processes_checkbox.setChecked(self.current_show_processes)
         self.processes_checkbox.toggled.connect(self.on_processes_changed_immediate)
@@ -1084,16 +1171,20 @@ class SettingsDialog(QWidget):
         apply_btn.clicked.connect(self.apply_settings)
         layout.addWidget(apply_btn)
         
-    def set_current_values(self, show_graphs, show_processes, interval):
+    def set_current_values(self, show_graphs, show_processes, show_history, interval):
         self.current_show_graphs = show_graphs
         self.current_show_processes = show_processes
+        self.current_show_history = show_history
         self.current_interval = float(interval)
         if hasattr(self, 'graphs_checkbox'):
             self.graphs_checkbox.setChecked(show_graphs)
         if hasattr(self, 'processes_checkbox'):
             self.processes_checkbox.setChecked(show_processes)
+        if hasattr(self, 'history_checkbox'):
+            self.history_checkbox.setChecked(show_history)
         if hasattr(self, 'interval_spin'):
             self.interval_spin.setValue(self.current_interval)
+
     def set_current_opacity(self, opacity):
         self.current_opacity = opacity
         if hasattr(self, "opacity_slider"):
@@ -1105,16 +1196,22 @@ class SettingsDialog(QWidget):
         self.current_threshold = threshold
         if hasattr(self, 'threshold_spin'):
             self.threshold_spin.setValue(threshold)
+
     def on_graphs_changed_immediate(self, checked):
         self.graphs_changed.emit(checked)
         
     def on_processes_changed_immediate(self, checked):
         self.processes_changed.emit(checked)
+
+    def on_history_changed_immediate(self, checked):
+        self.history_changed.emit(checked)
+
     def on_opacity_changed(self, value):
         opacity = value / 100.0
         self.current_opacity = opacity
         self.opacity_value_label.setText(f"{opacity:.2f}")
         self.opacity_changed.emit(opacity)
+
     def apply_settings(self):
         self.interval_changed.emit(self.interval_spin.value())
         self.opacity_changed.emit(self.current_opacity)
@@ -1146,6 +1243,7 @@ class tarrow(QObject):
         
         self.show_graphs = True
         self.show_processes = True
+        self.show_history = True
         self.update_interval = 2.0
         self.overlay_opacity = 1.0
         self.high_resource_usage = False
@@ -1290,11 +1388,13 @@ class tarrow(QObject):
                 
                 self.show_graphs = settings.get('show_graphs', True)
                 self.show_processes = settings.get('show_processes', True)
+                self.show_history = settings.get('show_history', True)
                 self.update_interval = float(settings.get('update_interval', 2.0))
                 self.overlay_opacity = float(settings.get('overlay_opacity', 1.0))
                 self.alert_threshold = float(settings.get('alert_threshold', 95.0))
                 self.overlay.show_graphs = self.show_graphs
                 self.overlay.show_processes = self.show_processes
+                self.overlay.show_history = self.show_history
                 self.stats_worker.set_update_interval(self.update_interval)
                 self.overlay.opacity = self.overlay_opacity
                 self.overlay.setWindowOpacity(self.overlay_opacity)
@@ -1309,6 +1409,7 @@ class tarrow(QObject):
             'edge_position': self.arrow.edge_position,
             'show_graphs': self.show_graphs,
             'show_processes': self.show_processes,
+            'show_history': self.show_history,
             'update_interval': float(self.update_interval),
             'overlay_opacity': float(self.overlay.opacity if hasattr(self.overlay, "opacity") else 1.0),
             'alert_threshold': float(self.alert_threshold)
@@ -1329,6 +1430,11 @@ class tarrow(QObject):
     def on_processes_changed(self, show_processes):
         self.show_processes = show_processes
         self.overlay.change_processes(show_processes)
+        self.save_settings()
+
+    def on_history_changed(self, show_history):
+        self.show_history = show_history
+        self.overlay.change_history(show_history)
         self.save_settings()
     
     def on_interval_changed(self, interval):
@@ -1359,11 +1465,12 @@ if __name__ == "__main__":
 
     def connect_settings_signals(overlay):
         if hasattr(overlay, 'settings_dialog') and overlay.settings_dialog:
-            overlay.settings_dialog.set_current_values(app.show_graphs, app.show_processes, app.update_interval)
+            overlay.settings_dialog.set_current_values(app.show_graphs, app.show_processes, app.show_history, app.update_interval)
             overlay.settings_dialog.set_current_opacity(app.overlay.opacity if hasattr(app.overlay, "opacity") else 1.0)
             overlay.settings_dialog.set_alert_threshold(app.alert_threshold)
             overlay.settings_dialog.graphs_changed.connect(app.on_graphs_changed)
             overlay.settings_dialog.processes_changed.connect(app.on_processes_changed)
+            overlay.settings_dialog.history_changed.connect(app.on_history_changed)
             overlay.settings_dialog.interval_changed.connect(app.on_interval_changed)
             overlay.settings_dialog.opacity_changed.connect(app.on_opacity_changed)
             overlay.settings_dialog.alert_threshold_changed.connect(app.on_alert_threshold_changed)

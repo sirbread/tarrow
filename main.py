@@ -62,6 +62,7 @@ class HotkeyListener(QThread):
         self.hotkey_name = hotkey_name
         self.capturing = False
         self.listener = None
+        self.key_down = False
 
     def get_key_str(self, key):
         try:
@@ -77,12 +78,15 @@ class HotkeyListener(QThread):
             return
 
         if key_str == self.hotkey_name:
-            self.hotkey_pressed.emit()
+            if not self.key_down:
+                self.key_down = True
+                self.hotkey_pressed.emit()
 
     def on_release(self, key):
         if not self.capturing:
             key_str = self.get_key_str(key)
             if key_str == self.hotkey_name:
+                self.key_down = False
                 self.hotkey_released.emit()
 
     def run(self):
@@ -1434,6 +1438,7 @@ class tarrow(QObject):
         self.alert_threshold = 95.0
         self.hotkey_name = 'f13'
         self.hotkey_listener = None
+        self.hotkey_is_down = False
 
         self.arrow = EdgeArrow()
         self.arrow.hover_show.connect(self.show_overlay_on_hover)
@@ -1501,17 +1506,19 @@ class tarrow(QObject):
         self.save_settings()
 
     def show_overlay_on_hotkey(self):
+        self.hotkey_is_down = True
         if not self.overlay_visible:
             self.position_and_show_overlay()
 
     def hide_overlay_on_hotkey(self):
+        self.hotkey_is_down = False
         if not self.overlay.is_pinned:
             self.overlay.hide()
             self.overlay_visible = False
 
 
     def check_hover_state(self):
-        if not self.overlay_visible or self.overlay.is_pinned:
+        if not self.overlay_visible or self.overlay.is_pinned or self.hotkey_is_down:
             return
         
         cursor_pos = QCursor.pos()
@@ -1614,7 +1621,7 @@ class tarrow(QObject):
                 self.update_interval = float(settings.get('update_interval', 2.0))
                 self.overlay_opacity = float(settings.get('overlay_opacity', 1.0))
                 self.alert_threshold = float(settings.get('alert_threshold', 95.0))
-                self.hotkey_name = settings.get('hotkey', 'f9')
+                self.hotkey_name = settings.get('hotkey', 'f13')
 
                 self.overlay.show_cpu = self.show_cpu
                 self.overlay.show_ram = self.show_ram

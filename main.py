@@ -60,25 +60,35 @@ class SystemStatsWorker(QThread):
         self.running = True
         self.update_interval = 2.0
         self.first_load = True
-        self.num_cores = psutil.cpu_count(logical=True) or 1
-        
-        psutil.cpu_percent(interval=None)
         
         self.last_process_check = 0
         self.process_cache = []
-        self.process_check_interval = 5.0  #opti: check processes every 5 seconds you can change this too 
+        self.process_check_interval = 5.0
 
         self.history_length = 60
         self.cpu_history = deque(maxlen=self.history_length)
         self.mem_history = deque(maxlen=self.history_length)
         self.disk_history = deque(maxlen=self.history_length)
 
+        self.last_cpu_times = psutil.cpu_times()
+
     def run(self):
         while self.running:
             try:
                 start_time = time.time()
                 
-                cpu_percent = psutil.cpu_percent(interval=None)
+                t1 = self.last_cpu_times
+                t2 = psutil.cpu_times()
+                
+                total_delta = sum(t2) - sum(t1)
+                idle_delta = t2.idle - t1.idle
+                
+                if total_delta > 0:
+                    cpu_percent = (1.0 - idle_delta / total_delta) * 100
+                else:
+                    cpu_percent = 0.0
+                
+                self.last_cpu_times = t2
                 self.cpu_history.append(cpu_percent)
                 
                 mem_stats = self.get_memory_usage()
@@ -141,55 +151,27 @@ class SystemStatsWorker(QThread):
             return "N/A"
 
     def get_top_processes(self):
-        #optim: use cached process information if recent enough
         current_time = time.time()
-        if current_time - self.last_process_check < self.process_check_interval and self.process_cache:
-            #return cached data if it recent enough
-            top_cpu = [p for p in self.process_cache if p['cpu_percent'] > 0.1]
-            top_cpu = sorted(top_cpu, key=lambda x: x['cpu_percent'], reverse=True)[:3]
-            
-            top_memory = [p for p in self.process_cache if p['memory_percent'] > 0.1]
-            top_memory = sorted(top_memory, key=lambda x: x['memory_percent'], reverse=True)[:3]
-            
-            return top_cpu, top_memory
         
-        #if cache outdated, it fucking dies and gets replaced by new 
-        top_cpu = []
-        top_memory = []
-        
-        try:
-            processes = []
-            for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent']):
-                try:
-                    proc_info = proc.info
-                    name = proc_info.get('name', '')
-                    if not name or 'Idle' in name or name == 'System' or name == '[kernel_task]':
-                        continue
-                        
-                    cpu_percent = (proc_info.get('cpu_percent', 0) or 0) / self.num_cores
-                    memory_percent = proc_info.get('memory_percent', 0) or 0
-                    
-                    processes.append({
-                        'name': name[:25],
-                        'cpu_percent': cpu_percent,
-                        'memory_percent': memory_percent
-                    })
-                    
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        processes = []
+        for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent']):
+            try:
+                proc_info = proc.info
+                name = proc_info.get('name', '')
+                if not name or 'Idle' in name or name == 'System' or name == '[kernel_task]':
                     continue
-            
-            #cache the processes themselves for future use
-            self.process_cache = processes
-            self.last_process_check = current_time
-            
-            cpu_processes = [p for p in processes if p['cpu_percent'] > 0.1]
-            top_cpu = sorted(cpu_processes, key=lambda x: x['cpu_percent'], reverse=True)[:3]
-            
-            memory_processes = [p for p in processes if p['memory_percent'] > 0.1]
-            top_memory = sorted(memory_processes, key=lambda x: x['memory_percent'], reverse=True)[:3]
-            
-        except Exception as e:
-            print(f"Error getting top processes: {e}")
+                    
+                processes.append({
+                    'name': name[:25],
+                    'cpu_percent': proc_info.get('cpu_percent', 0) or 0,
+                    'memory_percent': proc_info.get('memory_percent', 0) or 0
+                })
+                
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+        
+        top_cpu = sorted([p for p in processes if p['cpu_percent'] > 0.1], key=lambda x: x['cpu_percent'], reverse=True)[:3]
+        top_memory = sorted([p for p in processes if p['memory_percent'] > 0.1], key=lambda x: x['memory_percent'], reverse=True)[:3]
             
         return top_cpu, top_memory
 

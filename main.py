@@ -15,6 +15,7 @@ import time
 from datetime import datetime
 from functools import lru_cache
 from collections import deque
+from pynput import keyboard
 
 class CatppuccinTheme:
     COLORS = {
@@ -50,6 +51,52 @@ class CatppuccinTheme:
     @lru_cache(maxsize=32)  #opti :cache color lookups
     def get_color(cls, color_name):
         return cls.COLORS.get(color_name, '#ffffff')
+
+class HotkeyListener(QThread):
+    hotkey_pressed = pyqtSignal()
+    hotkey_released = pyqtSignal()
+    hotkey_captured = pyqtSignal(str)
+
+    def __init__(self, hotkey_name):
+        super().__init__()
+        self.hotkey_name = hotkey_name
+        self.capturing = False
+        self.listener = None
+
+    def get_key_str(self, key):
+        try:
+            return key.char
+        except AttributeError:
+            return key.name
+
+    def on_press(self, key):
+        key_str = self.get_key_str(key)
+        if self.capturing:
+            self.hotkey_captured.emit(key_str)
+            self.capturing = False
+            return
+
+        if key_str == self.hotkey_name:
+            self.hotkey_pressed.emit()
+
+    def on_release(self, key):
+        if not self.capturing:
+            key_str = self.get_key_str(key)
+            if key_str == self.hotkey_name:
+                self.hotkey_released.emit()
+
+    def run(self):
+        self.listener = keyboard.Listener(on_press=self.on_press, on_release=self.on_release)
+        self.listener.start()
+        self.listener.join()
+
+    def stop(self):
+        if self.listener:
+            self.listener.stop()
+
+    def enter_capture_mode(self):
+        self.capturing = True
+
 
 class SystemStatsWorker(QThread):
     stats_updated = pyqtSignal(dict)
@@ -140,11 +187,11 @@ class SystemStatsWorker(QThread):
                 for name in temps:
                     if 'core' in name.lower() or 'cpu' in name.lower() or 'k10' in name.lower() or 'zen' in name.lower():
                         if temps[name]:
-                            return f"{temps[name][0].current:.0f}C"
+                            return f"{temps[name][0].current:.0f}°C"
                 
                 for name in temps:
                     if temps[name]:
-                        return f"{temps[name][0].current:.0f}C"
+                        return f"{temps[name][0].current:.0f}°C"
 
             return "N/A"
         except Exception as e:
@@ -725,8 +772,9 @@ class HistoryGraph(QWidget):
 
 class StatsOverlay(QWidget):
     
-    def __init__(self, parent=None):
+    def __init__(self, app_instance, parent=None):
         super().__init__(parent)
+        self.app = app_instance
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | 
                            Qt.WindowType.WindowStaysOnTopHint |
                            Qt.WindowType.Tool)
@@ -1087,7 +1135,7 @@ class StatsOverlay(QWidget):
     
     def _create_and_show_settings(self):
         if not hasattr(self, 'settings_dialog') or not self.settings_dialog.isVisible():
-            self.settings_dialog = SettingsDialog(self)
+            self.settings_dialog = SettingsDialog(self.app)
             self.settings_dialog.cpu_changed.connect(self.change_cpu_visibility)
             self.settings_dialog.ram_changed.connect(self.change_ram_visibility)
             self.settings_dialog.disk_changed.connect(self.change_disk_visibility)
@@ -1097,13 +1145,16 @@ class StatsOverlay(QWidget):
             self.settings_dialog.history_changed.connect(self.change_history)
             self.settings_dialog.interval_changed.connect(self.change_interval)
             self.settings_dialog.opacity_changed.connect(self.change_opacity)
+            self.settings_dialog.hotkey_change_requested.connect(self.app.on_hotkey_change_request)
+
         self.settings_dialog.set_current_values(
             self.show_cpu, self.show_ram, self.show_disk, self.show_temp,
-            self.show_graphs, self.show_processes, self.show_history, self.parent_update_interval
+            self.show_graphs, self.show_processes, self.show_history, self.parent_update_interval,
+            self.app.hotkey_name
         )
         self.settings_dialog.set_current_opacity(self.opacity)
-        if hasattr(self.parent(), "alert_threshold"):
-            self.settings_dialog.set_alert_threshold(self.parent().alert_threshold)
+        if hasattr(self.app, "alert_threshold"):
+            self.settings_dialog.set_alert_threshold(self.app.alert_threshold)
         self.settings_dialog.show()
         self.settings_dialog.raise_()
         self.settings_dialog.activateWindow()
@@ -1149,8 +1200,8 @@ class StatsOverlay(QWidget):
     def change_opacity(self, opacity):
         self.opacity = opacity
         self.setWindowOpacity(opacity)
-        if hasattr(self.parent(), 'save_settings'):
-            self.parent().save_settings()
+        if hasattr(self.app, 'save_settings'):
+            self.app.save_settings()
         
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -1173,22 +1224,26 @@ class SettingsDialog(QWidget):
     interval_changed = pyqtSignal(float)
     opacity_changed = pyqtSignal(float)
     alert_threshold_changed = pyqtSignal(float)
+    hotkey_change_requested = pyqtSignal()
     
-    def __init__(self, parent=None):
+    def __init__(self, app_instance, parent=None):
         super().__init__(parent)
+        self.app = app_instance
         self.setWindowTitle("tarrow")
         self.setWindowFlags(Qt.WindowType.Dialog)
-        self.resize(400, 300)
-        self.current_show_cpu = parent.show_cpu if parent else True
-        self.current_show_ram = parent.show_ram if parent else True
-        self.current_show_disk = parent.show_disk if parent else True
-        self.current_show_temp = parent.show_temp if parent else True
-        self.current_show_graphs = parent.show_graphs if parent else True
-        self.current_show_processes = parent.show_processes if parent else True
-        self.current_show_history = parent.show_history if parent else True
-        self.current_interval = getattr(parent, "parent_update_interval", getattr(parent, "update_interval", 2.0))
-        self.current_opacity = getattr(parent, "opacity", 1.0)
-        self.current_threshold = getattr(parent.parent(), "alert_threshold", 95.0) if parent and hasattr(parent, "parent") else 95.0
+        self.resize(400, 350)
+        self.current_show_cpu = self.app.show_cpu
+        self.current_show_ram = self.app.show_ram
+        self.current_show_disk = self.app.show_disk
+        self.current_show_temp = self.app.show_temp
+        self.current_show_graphs = self.app.show_graphs
+        self.current_show_processes = self.app.show_processes
+        self.current_show_history = self.app.show_history
+        self.current_interval = self.app.update_interval
+        self.current_opacity = self.app.overlay_opacity
+        self.current_threshold = self.app.alert_threshold
+        self.current_hotkey = self.app.hotkey_name
+
         self.setup_ui()
         
     def setup_ui(self):
@@ -1236,6 +1291,10 @@ class SettingsDialog(QWidget):
         self.processes_checkbox.toggled.connect(self.on_processes_changed_immediate)
         layout.addWidget(self.processes_checkbox)
         
+        self.hotkey_button = QPushButton(f"Hotkey: {self.current_hotkey}")
+        self.hotkey_button.clicked.connect(self.request_hotkey_change)
+        layout.addWidget(self.hotkey_button)
+
         interval_layout = QHBoxLayout()
         interval_label = QLabel("Update Interval (seconds):")
         self.interval_spin = QDoubleSpinBox()
@@ -1276,7 +1335,7 @@ class SettingsDialog(QWidget):
         apply_btn.clicked.connect(self.apply_settings)
         layout.addWidget(apply_btn)
         
-    def set_current_values(self, show_cpu, show_ram, show_disk, show_temp, show_graphs, show_processes, show_history, interval):
+    def set_current_values(self, show_cpu, show_ram, show_disk, show_temp, show_graphs, show_processes, show_history, interval, hotkey):
         self.current_show_cpu = show_cpu
         self.current_show_ram = show_ram
         self.current_show_disk = show_disk
@@ -1285,6 +1344,7 @@ class SettingsDialog(QWidget):
         self.current_show_processes = show_processes
         self.current_show_history = show_history
         self.current_interval = float(interval)
+        self.current_hotkey = hotkey
 
         if hasattr(self, 'cpu_checkbox'): self.cpu_checkbox.setChecked(show_cpu)
         if hasattr(self, 'ram_checkbox'): self.ram_checkbox.setChecked(show_ram)
@@ -1294,6 +1354,16 @@ class SettingsDialog(QWidget):
         if hasattr(self, 'processes_checkbox'): self.processes_checkbox.setChecked(show_processes)
         if hasattr(self, 'history_checkbox'): self.history_checkbox.setChecked(show_history)
         if hasattr(self, 'interval_spin'): self.interval_spin.setValue(self.current_interval)
+        if hasattr(self, 'hotkey_button'): self.hotkey_button.setText(f"Hotkey: {hotkey}")
+
+    def update_hotkey_display(self, key_name):
+        self.current_hotkey = key_name
+        self.hotkey_button.setText(f"Hotkey: {key_name}")
+
+    def request_hotkey_change(self):
+        self.hotkey_button.setText("Press any key...")
+        self.hotkey_change_requested.emit()
+
 
     def set_current_opacity(self, opacity):
         self.current_opacity = opacity
@@ -1344,7 +1414,8 @@ class OverlayEventFilter(QObject):
         return False
 
 class tarrow(QObject):
-    
+    hotkey_has_been_updated = pyqtSignal(str)
+
     def __init__(self):
         super().__init__()
         self.app = QApplication(sys.argv)
@@ -1361,7 +1432,9 @@ class tarrow(QObject):
         self.overlay_opacity = 1.0
         self.high_resource_usage = False
         self.alert_threshold = 95.0
-        
+        self.hotkey_name = 'f13'
+        self.hotkey_listener = None
+
         self.arrow = EdgeArrow()
         self.arrow.hover_show.connect(self.show_overlay_on_hover)
         self.arrow.click_toggle_pin.connect(self.toggle_pin_overlay)
@@ -1369,7 +1442,7 @@ class tarrow(QObject):
         self.arrow.drag_finished.connect(self.on_drag_finished)
         self.arrow.show()
         
-        self.overlay = StatsOverlay()
+        self.overlay = StatsOverlay(app_instance=self)
         self.overlay_visible = False
         
         self.overlay_filter = OverlayEventFilter()
@@ -1387,9 +1460,22 @@ class tarrow(QObject):
         self.stats_worker.start()
 
         self.load_settings()
+        self.setup_hotkey_listener()
         self.overlay.setWindowOpacity(self.overlay_opacity)
         self.overlay.opacity = self.overlay_opacity
         self.overlay.parent_update_interval = self.update_interval
+
+    def setup_hotkey_listener(self):
+        if self.hotkey_listener:
+            self.hotkey_listener.stop()
+            self.hotkey_listener.wait()
+
+        self.hotkey_listener = HotkeyListener(self.hotkey_name)
+        self.hotkey_listener.hotkey_pressed.connect(self.show_overlay_on_hotkey)
+        self.hotkey_listener.hotkey_released.connect(self.hide_overlay_on_hotkey)
+        self.hotkey_listener.hotkey_captured.connect(self.on_hotkey_captured)
+        self.hotkey_listener.start()
+
     def update_overlay_stats(self, stats):
         if self.overlay_visible:
             self.overlay.update_stats(stats)
@@ -1404,6 +1490,25 @@ class tarrow(QObject):
             self.high_resource_usage = is_high_usage
             self.arrow.set_alert_state(is_high_usage)
     
+    def on_hotkey_change_request(self):
+        if self.hotkey_listener:
+            self.hotkey_listener.enter_capture_mode()
+
+    def on_hotkey_captured(self, key_name):
+        self.hotkey_name = key_name
+        self.setup_hotkey_listener()
+        self.hotkey_has_been_updated.emit(key_name)
+        self.save_settings()
+
+    def show_overlay_on_hotkey(self):
+        if not self.overlay_visible:
+            self.position_and_show_overlay()
+
+    def hide_overlay_on_hotkey(self):
+        if not self.overlay.is_pinned:
+            self.overlay.hide()
+            self.overlay_visible = False
+
 
     def check_hover_state(self):
         if not self.overlay_visible or self.overlay.is_pinned:
@@ -1509,7 +1614,8 @@ class tarrow(QObject):
                 self.update_interval = float(settings.get('update_interval', 2.0))
                 self.overlay_opacity = float(settings.get('overlay_opacity', 1.0))
                 self.alert_threshold = float(settings.get('alert_threshold', 95.0))
-                
+                self.hotkey_name = settings.get('hotkey', 'f9')
+
                 self.overlay.show_cpu = self.show_cpu
                 self.overlay.show_ram = self.show_ram
                 self.overlay.show_disk = self.show_disk
@@ -1538,7 +1644,8 @@ class tarrow(QObject):
             'show_history': self.show_history,
             'update_interval': float(self.update_interval),
             'overlay_opacity': float(self.overlay.opacity if hasattr(self.overlay, "opacity") else 1.0),
-            'alert_threshold': float(self.alert_threshold)
+            'alert_threshold': float(self.alert_threshold),
+            'hotkey': self.hotkey_name
         }
 
         settings_file = Path.home() / '.tarrow.json'
@@ -1604,6 +1711,8 @@ class tarrow(QObject):
         finally:
             if hasattr(self, 'stats_worker'):
                 self.stats_worker.stop()
+            if hasattr(self, 'hotkey_listener'):
+                self.hotkey_listener.stop()
             self.save_settings()
 
 if __name__ == "__main__":
@@ -1613,7 +1722,8 @@ if __name__ == "__main__":
         if hasattr(overlay, 'settings_dialog') and overlay.settings_dialog:
             overlay.settings_dialog.set_current_values(
                 app.show_cpu, app.show_ram, app.show_disk, app.show_temp,
-                app.show_graphs, app.show_processes, app.show_history, app.update_interval
+                app.show_graphs, app.show_processes, app.show_history, app.update_interval,
+                app.hotkey_name
             )
             overlay.settings_dialog.set_current_opacity(app.overlay.opacity if hasattr(app.overlay, "opacity") else 1.0)
             overlay.settings_dialog.set_alert_threshold(app.alert_threshold)
@@ -1627,6 +1737,8 @@ if __name__ == "__main__":
             overlay.settings_dialog.interval_changed.connect(app.on_interval_changed)
             overlay.settings_dialog.opacity_changed.connect(app.on_opacity_changed)
             overlay.settings_dialog.alert_threshold_changed.connect(app.on_alert_threshold_changed)
+            app.hotkey_has_been_updated.connect(overlay.settings_dialog.update_hotkey_display)
+
     original_show_settings = app.overlay.show_settings_immediate
     def enhanced_show_settings():
         original_show_settings()

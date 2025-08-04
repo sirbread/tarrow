@@ -817,6 +817,7 @@ class CompactHud(QWidget):
 
         label = QLabel(f"{name}:")
         label.setStyleSheet(f"color: {CatppuccinTheme.get_color('text')}; font-size: 10px; font-weight: bold;")
+        label.setFixedWidth(35)
         
         bar = ProgressBar()
         bar.setFixedHeight(10)
@@ -868,18 +869,18 @@ class CompactHud(QWidget):
         painter.drawRoundedRect(self.rect(), 8, 8)
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
+        if event.button() == Qt.MouseButton.RightButton:
             self.dragging = True
             self.drag_start_pos = event.globalPosition().toPoint() - self.pos()
             event.accept()
 
     def mouseMoveEvent(self, event):
-        if self.dragging and event.buttons() & Qt.MouseButton.LeftButton:
+        if self.dragging and event.buttons() & Qt.MouseButton.RightButton:
             self.move(event.globalPosition().toPoint() - self.drag_start_pos)
             event.accept()
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
+        if event.button() == Qt.MouseButton.RightButton:
             self.dragging = False
             self.drag_finished.emit()
             event.accept()
@@ -889,7 +890,6 @@ class CompactHud(QWidget):
 
     def leaveEvent(self, event):
         self.hover_timer.stop()
-
 
 
 class StatsOverlay(QWidget):
@@ -1710,20 +1710,37 @@ class tarrow(QObject):
         screen_geom = screen.geometry()
         trigger_pos = trigger_widget.pos()
         trigger_size = trigger_widget.size()
-        
-        overlay_x = trigger_pos.x() + trigger_size.width() + 10
-        overlay_y = trigger_pos.y() + (trigger_size.height() // 2) - (self.overlay.height() // 2)
+        overlay_size = self.overlay.size()
 
-        
+        if not self.compact_mode:
+            if self.arrow.edge == 'right':
+                overlay_x = trigger_pos.x() - overlay_size.width() - 10
+                overlay_y = trigger_pos.y() + (trigger_size.height() // 2) - (overlay_size.height() // 2)
+            elif self.arrow.edge == 'left':
+                overlay_x = trigger_pos.x() + trigger_size.width() + 10
+                overlay_y = trigger_pos.y() + (trigger_size.height() // 2) - (overlay_size.height() // 2)
+            elif self.arrow.edge == 'top':
+                overlay_x = trigger_pos.x() + (trigger_size.width() // 2) - (overlay_size.width() // 2)
+                overlay_y = trigger_pos.y() + trigger_size.height() + 10
+            else: # bottom
+                overlay_x = trigger_pos.x() + (trigger_size.width() // 2) - (overlay_size.width() // 2)
+                overlay_y = trigger_pos.y() - overlay_size.height() - 10
+        else:
+            overlay_x = trigger_pos.x() + (trigger_size.width() // 2) - (overlay_size.width() // 2)
+            overlay_y = trigger_pos.y() + trigger_size.height() + 5
+            if overlay_y + overlay_size.height() > screen_geom.bottom():
+                overlay_y = trigger_pos.y() - overlay_size.height() - 5
+
+
         self.overlay.move(overlay_x, overlay_y)
         
         overlay_rect = self.overlay.geometry()
         if overlay_rect.right() > screen_geom.right():
-            self.overlay.move(screen_geom.right() - self.overlay.width(), overlay_rect.y())
+            self.overlay.move(screen_geom.right() - overlay_rect.width(), overlay_rect.y())
         if overlay_rect.left() < screen_geom.left():
             self.overlay.move(screen_geom.left(), overlay_rect.y())
         if overlay_rect.bottom() > screen_geom.bottom():
-            self.overlay.move(overlay_rect.x(), screen_geom.bottom() - self.overlay.height())
+            self.overlay.move(overlay_rect.x(), screen_geom.bottom() - overlay_rect.height())
         if overlay_rect.top() < screen_geom.top():
             self.overlay.move(overlay_rect.x(), screen_geom.top())
 

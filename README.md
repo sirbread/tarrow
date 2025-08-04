@@ -46,7 +46,10 @@ you know the drill
 *   **change settings**: hover to show the detailed overlay, then click the little gear icon (⚙️) in the top-right corner.
 
 ### boring stuff
-pin icon: [here](https://indonesian-recipes.com/download/2030-version.html) (changed to be one color)
+pin icon: [here](https://indonesian-recipes.com/download/2030-version.html) (changed to be one color) <br>
+ai used in the following lines:
+- 185 - 206 (cpu readings were trash, mildly fixed)
+- 118 - 145 (same thing as above)
 
 ### todo
 none for now :D

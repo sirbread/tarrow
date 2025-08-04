@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="images/title.png" alt="tarrow" width="25%"/>
+  <img src="images/title.png" alt="tarrow" width="40%"/>
 </div>
 
 <div align="center">
@@ -9,8 +9,8 @@
 ---
 
 <div align="center">
-  <img src="images/s1.png" alt="screenshot of the detailed overlay" width="20%"/>
-  <img src="images/s2.png" alt="screenshot of the compact hud" width="20%"/>
+  <img src="images/s1.png" alt="screenshot of the detailed overlay" width="30%"/>
+  <img src="images/s2.png" alt="screenshot of the compact hud" width="30%"/>
 </div>
 
 ---

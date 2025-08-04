@@ -101,7 +101,6 @@ class HotkeyListener(QThread):
     def enter_capture_mode(self):
         self.capturing = True
 
-
 class SystemStatsWorker(QThread):
     stats_updated = pyqtSignal(dict)
     first_load_complete = pyqtSignal()
@@ -121,6 +120,7 @@ class SystemStatsWorker(QThread):
         self.mem_history = deque(maxlen=self.history_length)
         self.disk_history = deque(maxlen=self.history_length)
 
+        # For manual CPU calculation
         self.last_cpu_times = psutil.cpu_times()
 
     def run(self):
@@ -128,6 +128,7 @@ class SystemStatsWorker(QThread):
             try:
                 start_time = time.time()
                 
+                # Manual and more reliable CPU usage calculation
                 t1 = self.last_cpu_times
                 t2 = psutil.cpu_times()
                 
@@ -188,17 +189,20 @@ class SystemStatsWorker(QThread):
                 if not temps:
                     return "N/A"
                 
+                # Look for common keys for CPU temperature
                 for name in temps:
                     if 'core' in name.lower() or 'cpu' in name.lower() or 'k10' in name.lower() or 'zen' in name.lower():
                         if temps[name]:
                             return f"{temps[name][0].current:.0f}°C"
                 
+                # Fallback to the first available sensor if no common CPU key is found
                 for name in temps:
                     if temps[name]:
                         return f"{temps[name][0].current:.0f}°C"
 
             return "N/A"
         except Exception as e:
+            # This is not an error, it just means the platform is not supported
             return "N/A"
 
     def get_top_processes(self):
@@ -774,6 +778,120 @@ class HistoryGraph(QWidget):
         painter.setPen(pen)
         painter.drawPath(path)
 
+class CompactHud(QWidget):
+    hover_show = pyqtSignal()
+    drag_finished = pyqtSignal()
+
+    def __init__(self, app_instance, parent=None):
+        super().__init__(parent)
+        self.app = app_instance
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | 
+                           Qt.WindowType.WindowStaysOnTopHint |
+                           Qt.WindowType.Tool)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+        self.dragging = False
+        self.drag_start_pos = QPoint()
+
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(10, 5, 10, 5)
+        self.main_layout.setSpacing(4)
+        
+        self.cpu_widget = self.create_bar_widget("CPU")
+        self.mem_widget = self.create_bar_widget("MEM")
+        self.disk_widget = self.create_bar_widget("DSK")
+
+        self.main_layout.addWidget(self.cpu_widget)
+        self.main_layout.addWidget(self.mem_widget)
+        self.main_layout.addWidget(self.disk_widget)
+
+        self.hover_timer = QTimer(self)
+        self.hover_timer.setSingleShot(True)
+        self.hover_timer.timeout.connect(self.hover_show.emit)
+
+    def create_bar_widget(self, name):
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(5)
+
+        label = QLabel(f"{name}:")
+        label.setStyleSheet(f"color: {CatppuccinTheme.get_color('text')}; font-size: 10px; font-weight: bold;")
+        
+        bar = ProgressBar()
+        bar.setFixedHeight(10)
+        
+        layout.addWidget(label)
+        layout.addWidget(bar, 1)
+
+        widget.setProperty("label", label)
+        widget.setProperty("bar", bar)
+        return widget
+
+    def update_stats(self, stats, settings):
+        # CPU
+        if settings['show_cpu']:
+            cpu_percent = stats.get('cpu', 0)
+            self.cpu_widget.property("bar").set_percentage(cpu_percent)
+            self.cpu_widget.property("bar").set_color(CatppuccinTheme.get_color('red'))
+            self.cpu_widget.show()
+        else:
+            self.cpu_widget.hide()
+
+        # Memory
+        if settings['show_ram']:
+            mem_percent = stats.get('memory', {}).get('percent', 0)
+            self.mem_widget.property("bar").set_percentage(mem_percent)
+            self.mem_widget.property("bar").set_color(CatppuccinTheme.get_color('blue'))
+            self.mem_widget.show()
+        else:
+            self.mem_widget.hide()
+
+        # Disk
+        if settings['show_disk']:
+            disk_percent = stats.get('disk', {}).get('percent', 0)
+            self.disk_widget.property("bar").set_percentage(disk_percent)
+            self.disk_widget.property("bar").set_color(CatppuccinTheme.get_color('green'))
+            self.disk_widget.show()
+        else:
+            self.disk_widget.hide()
+            
+        self.adjustSize()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        bg_color = QColor(CatppuccinTheme.get_color('mantle'))
+        bg_color.setAlpha(230)
+        painter.setBrush(QBrush(bg_color))
+        painter.setPen(QPen(QColor(CatppuccinTheme.get_color('surface2')), 1))
+        painter.drawRoundedRect(self.rect(), 8, 8)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.dragging = True
+            self.drag_start_pos = event.globalPosition().toPoint() - self.pos()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self.dragging and event.buttons() & Qt.MouseButton.LeftButton:
+            self.move(event.globalPosition().toPoint() - self.drag_start_pos)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.dragging = False
+            self.drag_finished.emit()
+            event.accept()
+
+    def enterEvent(self, event):
+        self.hover_timer.start(300)
+
+    def leaveEvent(self, event):
+        self.hover_timer.stop()
+
+
+
 class StatsOverlay(QWidget):
     
     def __init__(self, app_instance, parent=None):
@@ -1150,11 +1268,12 @@ class StatsOverlay(QWidget):
             self.settings_dialog.interval_changed.connect(self.change_interval)
             self.settings_dialog.opacity_changed.connect(self.change_opacity)
             self.settings_dialog.hotkey_change_requested.connect(self.app.on_hotkey_change_request)
+            self.settings_dialog.compact_mode_changed.connect(self.app.on_compact_mode_changed)
 
         self.settings_dialog.set_current_values(
             self.show_cpu, self.show_ram, self.show_disk, self.show_temp,
             self.show_graphs, self.show_processes, self.show_history, self.parent_update_interval,
-            self.app.hotkey_name
+            self.app.hotkey_name, self.app.compact_mode
         )
         self.settings_dialog.set_current_opacity(self.opacity)
         if hasattr(self.app, "alert_threshold"):
@@ -1229,6 +1348,7 @@ class SettingsDialog(QWidget):
     opacity_changed = pyqtSignal(float)
     alert_threshold_changed = pyqtSignal(float)
     hotkey_change_requested = pyqtSignal()
+    compact_mode_changed = pyqtSignal(bool)
     
     def __init__(self, app_instance, parent=None):
         super().__init__(parent)
@@ -1247,6 +1367,7 @@ class SettingsDialog(QWidget):
         self.current_opacity = self.app.overlay_opacity
         self.current_threshold = self.app.alert_threshold
         self.current_hotkey = self.app.hotkey_name
+        self.current_compact_mode = self.app.compact_mode
 
         self.setup_ui()
         
@@ -1260,6 +1381,11 @@ class SettingsDialog(QWidget):
                 if child:
                     child.setParent(None)
         
+        self.compact_mode_checkbox = QCheckBox("Compact HUD Mode")
+        self.compact_mode_checkbox.setChecked(self.current_compact_mode)
+        self.compact_mode_checkbox.toggled.connect(self.on_compact_mode_changed)
+        layout.addWidget(self.compact_mode_checkbox)
+
         self.cpu_checkbox = QCheckBox("Show CPU Usage")
         self.cpu_checkbox.setChecked(self.current_show_cpu)
         self.cpu_checkbox.toggled.connect(self.on_cpu_changed_immediate)
@@ -1339,7 +1465,7 @@ class SettingsDialog(QWidget):
         apply_btn.clicked.connect(self.apply_settings)
         layout.addWidget(apply_btn)
         
-    def set_current_values(self, show_cpu, show_ram, show_disk, show_temp, show_graphs, show_processes, show_history, interval, hotkey):
+    def set_current_values(self, show_cpu, show_ram, show_disk, show_temp, show_graphs, show_processes, show_history, interval, hotkey, compact_mode):
         self.current_show_cpu = show_cpu
         self.current_show_ram = show_ram
         self.current_show_disk = show_disk
@@ -1349,6 +1475,7 @@ class SettingsDialog(QWidget):
         self.current_show_history = show_history
         self.current_interval = float(interval)
         self.current_hotkey = hotkey
+        self.current_compact_mode = compact_mode
 
         if hasattr(self, 'cpu_checkbox'): self.cpu_checkbox.setChecked(show_cpu)
         if hasattr(self, 'ram_checkbox'): self.ram_checkbox.setChecked(show_ram)
@@ -1359,6 +1486,7 @@ class SettingsDialog(QWidget):
         if hasattr(self, 'history_checkbox'): self.history_checkbox.setChecked(show_history)
         if hasattr(self, 'interval_spin'): self.interval_spin.setValue(self.current_interval)
         if hasattr(self, 'hotkey_button'): self.hotkey_button.setText(f"Hotkey: {hotkey}")
+        if hasattr(self, 'compact_mode_checkbox'): self.compact_mode_checkbox.setChecked(compact_mode)
 
     def update_hotkey_display(self, key_name):
         self.current_hotkey = key_name
@@ -1381,6 +1509,7 @@ class SettingsDialog(QWidget):
         if hasattr(self, 'threshold_spin'):
             self.threshold_spin.setValue(threshold)
 
+    def on_compact_mode_changed(self, checked): self.compact_mode_changed.emit(checked)
     def on_cpu_changed_immediate(self, checked): self.cpu_changed.emit(checked)
     def on_ram_changed_immediate(self, checked): self.ram_changed.emit(checked)
     def on_disk_changed_immediate(self, checked): self.disk_changed.emit(checked)
@@ -1439,13 +1568,17 @@ class tarrow(QObject):
         self.hotkey_name = 'f13'
         self.hotkey_listener = None
         self.hotkey_is_down = False
+        self.compact_mode = False
 
         self.arrow = EdgeArrow()
         self.arrow.hover_show.connect(self.show_overlay_on_hover)
         self.arrow.click_toggle_pin.connect(self.toggle_pin_overlay)
         self.arrow.drag_started.connect(self.on_drag_started)
-        self.arrow.drag_finished.connect(self.on_drag_finished)
-        self.arrow.show()
+        self.arrow.drag_finished.connect(self.save_settings)
+        
+        self.compact_hud = CompactHud(self)
+        self.compact_hud.hover_show.connect(self.show_overlay_on_hover)
+        self.compact_hud.drag_finished.connect(self.save_settings)
         
         self.overlay = StatsOverlay(app_instance=self)
         self.overlay_visible = False
@@ -1460,11 +1593,12 @@ class tarrow(QObject):
         self.hover_check_timer.start(100)
         
         self.stats_worker = SystemStatsWorker()
-        self.stats_worker.stats_updated.connect(self.update_overlay_stats)
+        self.stats_worker.stats_updated.connect(self.update_stats)
         self.stats_worker.first_load_complete.connect(self.overlay.first_load_complete)
         self.stats_worker.start()
 
         self.load_settings()
+        self.update_hud_mode()
         self.setup_hotkey_listener()
         self.overlay.setWindowOpacity(self.overlay_opacity)
         self.overlay.opacity = self.overlay_opacity
@@ -1481,7 +1615,15 @@ class tarrow(QObject):
         self.hotkey_listener.hotkey_captured.connect(self.on_hotkey_captured)
         self.hotkey_listener.start()
 
-    def update_overlay_stats(self, stats):
+    def update_stats(self, stats):
+        settings = {
+            'show_cpu': self.show_cpu,
+            'show_ram': self.show_ram,
+            'show_disk': self.show_disk,
+        }
+        if self.compact_mode and self.compact_hud.isVisible():
+            self.compact_hud.update_stats(stats, settings)
+
         if self.overlay_visible:
             self.overlay.update_stats(stats)
         
@@ -1493,8 +1635,9 @@ class tarrow(QObject):
         
         if is_high_usage != self.high_resource_usage:
             self.high_resource_usage = is_high_usage
-            self.arrow.set_alert_state(is_high_usage)
-    
+            if not self.compact_mode:
+                self.arrow.set_alert_state(is_high_usage)
+
     def on_hotkey_change_request(self):
         if self.hotkey_listener:
             self.hotkey_listener.enter_capture_mode()
@@ -1523,13 +1666,18 @@ class tarrow(QObject):
         
         cursor_pos = QCursor.pos()
         
-        arrow_rect = QRect(self.arrow.pos(), self.arrow.size())
-        cursor_over_arrow = arrow_rect.contains(cursor_pos)
+        if self.compact_mode:
+            trigger_widget = self.compact_hud
+        else:
+            trigger_widget = self.arrow
+            
+        trigger_rect = QRect(trigger_widget.pos(), trigger_widget.size())
+        cursor_over_trigger = trigger_rect.contains(cursor_pos)
         
         overlay_rect = QRect(self.overlay.pos(), self.overlay.size())
         cursor_over_overlay = overlay_rect.contains(cursor_pos)
         
-        if not cursor_over_arrow and not cursor_over_overlay:
+        if not cursor_over_trigger and not cursor_over_overlay:
             self.overlay.hide()
             self.overlay_visible = False
     def show_overlay_on_hover(self):
@@ -1538,7 +1686,8 @@ class tarrow(QObject):
     def toggle_pin_overlay(self):
         new_pinned = not self.overlay.is_pinned
         self.overlay.is_pinned = new_pinned
-        self.arrow.set_pinned(new_pinned)
+        if not self.compact_mode:
+            self.arrow.set_pinned(new_pinned)
         if not self.overlay_visible:
             self.position_and_show_overlay()
     def on_drag_started(self):
@@ -1551,22 +1700,20 @@ class tarrow(QObject):
             self.position_and_show_overlay()
 
     def position_and_show_overlay(self):
-        arrow_pos = self.arrow.pos()
-        arrow_size = self.arrow.size()
-        screen_geom = self.arrow.screen.geometry()
+        if self.compact_mode:
+            trigger_widget = self.compact_hud
+            screen = trigger_widget.screen()
+        else:
+            trigger_widget = self.arrow
+            screen = trigger_widget.screen
+        
+        screen_geom = screen.geometry()
+        trigger_pos = trigger_widget.pos()
+        trigger_size = trigger_widget.size()
+        
+        overlay_x = trigger_pos.x() + trigger_size.width() + 10
+        overlay_y = trigger_pos.y() + (trigger_size.height() // 2) - (self.overlay.height() // 2)
 
-        if self.arrow.edge == 'right':
-            overlay_x = arrow_pos.x() - self.overlay.width() - 10
-            overlay_y = arrow_pos.y() + (arrow_size.height() // 2) - (self.overlay.height() // 2)
-        elif self.arrow.edge == 'left':
-            overlay_x = arrow_pos.x() + arrow_size.width() + 10
-            overlay_y = arrow_pos.y() + (arrow_size.height() // 2) - (self.overlay.height() // 2)
-        elif self.arrow.edge == 'top':
-            overlay_x = arrow_pos.x() + (arrow_size.width() // 2) - (self.overlay.width() // 2)
-            overlay_y = arrow_pos.y() + arrow_size.height() + 10
-        else: # bottom
-            overlay_x = arrow_pos.x() + (arrow_size.width() // 2) - (self.overlay.width() // 2)
-            overlay_y = arrow_pos.y() - self.overlay.height() - 10
         
         self.overlay.move(overlay_x, overlay_y)
         
@@ -1595,6 +1742,11 @@ class tarrow(QObject):
             try:
                 with open(settings_file, 'r') as f:
                     settings = json.load(f)
+                
+                self.compact_mode = settings.get('compact_mode', False)
+                pos = settings.get('compact_hud_pos')
+                if pos:
+                    self.compact_hud.move(QPoint(pos[0], pos[1]))
                 
                 screen_name = settings.get('screen_name')
                 screens = self.app.screens()
@@ -1642,6 +1794,8 @@ class tarrow(QObject):
             'screen_name': self.arrow.screen.name() if self.arrow.screen else '',
             'edge': self.arrow.edge,
             'edge_position': self.arrow.edge_position,
+            'compact_mode': self.compact_mode,
+            'compact_hud_pos': [self.compact_hud.x(), self.compact_hud.y()],
             'show_cpu': self.show_cpu,
             'show_ram': self.show_ram,
             'show_disk': self.show_disk,
@@ -1661,6 +1815,19 @@ class tarrow(QObject):
                 json.dump(settings, f, indent=2)
         except Exception as e:
             print(f"Error saving settings: {e}")
+
+    def on_compact_mode_changed(self, enabled):
+        self.compact_mode = enabled
+        self.update_hud_mode()
+        self.save_settings()
+
+    def update_hud_mode(self):
+        if self.compact_mode:
+            self.arrow.hide()
+            self.compact_hud.show()
+        else:
+            self.compact_hud.hide()
+            self.arrow.show()
 
     def on_cpu_changed(self, show):
         self.show_cpu = show
@@ -1730,7 +1897,7 @@ if __name__ == "__main__":
             overlay.settings_dialog.set_current_values(
                 app.show_cpu, app.show_ram, app.show_disk, app.show_temp,
                 app.show_graphs, app.show_processes, app.show_history, app.update_interval,
-                app.hotkey_name
+                app.hotkey_name, app.compact_mode
             )
             overlay.settings_dialog.set_current_opacity(app.overlay.opacity if hasattr(app.overlay, "opacity") else 1.0)
             overlay.settings_dialog.set_alert_threshold(app.alert_threshold)
